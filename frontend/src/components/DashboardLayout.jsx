@@ -5,6 +5,7 @@ import useClock from "../hooks/useClock";
 import Sidebar from "./Sidebar";
 import MobileNav from "./MobileNav";
 import Header from "./Header";
+import NotificationBell from "./NotificationBell";
 
 const DashboardLayout = () => {
   const { time, date } = useClock();
@@ -24,6 +25,17 @@ const DashboardLayout = () => {
     navigate("/");
   };
 
+  // Where a clicked notification takes staff.
+  const openNotification = (n) => {
+    const data = n?.data || {};
+    let path = data.path;
+    if (path === "lost-items") {
+      path = userRole?.toLowerCase() === "moderator" ? "/dashboard/moderator-lost" : "/dashboard/lost-items";
+    }
+    if (!path) return;
+    navigate(path, data.claim_id != null ? { state: { openClaimId: data.claim_id } } : undefined);
+  };
+
   if (!isLoggedIn) {
     return <Navigate to="/" replace />;
   }
@@ -39,6 +51,7 @@ const DashboardLayout = () => {
           date={date}
           onLogout={handleLogout}
           onLogoClick={() => setIsCollapsed((prev) => !prev)}
+          actions={<NotificationBell tone="dark" onOpen={openNotification} />}
         />
       </div>
 

@@ -1,12 +1,28 @@
 import React, { useEffect, useState, useRef } from "react";
-import { Filter, X, Printer, ChevronDown, Check, Settings } from "lucide-react";
+import { Filter, X, Printer, ChevronDown, ChevronLeft, ChevronRight, Check, Settings } from "lucide-react";
 import { getLeaderboardSettings, updateLeaderboardSettings, getPointsTracking } from "../api/api";
+import saoLogo from "../assets/sao.png";
+import slcLogo from "../assets/slc-logo.png";
+import seekBalikLogo from "../assets/seek-balik-logo.jpg";
+import Pagination from "../components/Pagination";
+import { confirmAction } from "../components/ConfirmDialog";
+import { showToast } from "../utils/toast";
+
+const SCHOOL_NAME = "Saint Louis College";
+const SCHOOL_ADDRESS = "City of San Fernando, La Union";
 
 // Default semester configuration (Months are 0-indexed)
 const DEFAULT_SEMESTER_CONFIG = {
   firstSem: { startMonth: 7, endMonth: 11 }, // Aug - Dec
   secondSem: { startMonth: 0, endMonth: 4 }, // Jan - May
   shortTerm: { startMonth: 5, endMonth: 6 }, // Jun - Jul
+};
+
+// Always use the item's own ID. Never fall back to the ticket number,
+// because the ticket number is already shown elsewhere (redundant information).
+const getItemId = (record) => {
+  const id = record?.item_id;
+  return id === null || id === undefined || id === "" ? "-" : String(id);
 };
 
 const getSchoolYearAndSemFromDate = (dateString, semConfig = DEFAULT_SEMESTER_CONFIG) => {
@@ -19,7 +35,8 @@ const getSchoolYearAndSemFromDate = (dateString, semConfig = DEFAULT_SEMESTER_CO
   let sem = "";
   let schoolYear = "";
 
-  const { firstSem, secondSem, shortTerm } = semConfig;
+  // Missing ranges fall back to the defaults (a partly saved config used to crash here).
+  const { firstSem, secondSem, shortTerm } = { ...DEFAULT_SEMESTER_CONFIG, ...(semConfig || {}) };
 
   // Function to check if a month is in range (handles year wrap-around if needed)
   const isMonthInRange = (m, start, end) => {
@@ -29,10 +46,13 @@ const getSchoolYearAndSemFromDate = (dateString, semConfig = DEFAULT_SEMESTER_CO
 
   if (isMonthInRange(month, Number(firstSem.startMonth), Number(firstSem.endMonth))) {
     sem = "1st Semester";
-    schoolYear = `${year}-${year + 1}`;
+    // e.g. Sep-Jan: January still belongs to the school year that began last year.
+    const startYear = month >= Number(firstSem.startMonth) ? year : year - 1;
+    schoolYear = `${startYear}-${startYear + 1}`;
   } else if (isMonthInRange(month, Number(secondSem.startMonth), Number(secondSem.endMonth))) {
     sem = "2nd Semester";
-    schoolYear = `${year - 1}-${year}`;
+    const endYear = month <= Number(secondSem.endMonth) ? year : year + 1;
+    schoolYear = `${endYear - 1}-${endYear}`;
   } else if (isMonthInRange(month, Number(shortTerm.startMonth), Number(shortTerm.endMonth))) {
     sem = "Short Term";
     schoolYear = `${year}`;
@@ -154,6 +174,33 @@ const FilterSelect = ({ label, value, onChange, options }) => (
 );
 
 // ─── Leaderboard Settings Modal ─────────────────────────────────────────────
+const SemesterRow = ({ label, config, defaults, onChange }) => (
+  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+    <span className="text-xs font-bold text-slate-700 w-28">{label}</span>
+    <div className="flex items-center gap-2">
+      <select
+        value={config?.startMonth ?? defaults.startMonth}
+        onChange={(e) => onChange({ ...config, startMonth: Number(e.target.value) })}
+        className="border border-slate-300 rounded-lg p-1 text-xs font-semibold"
+      >
+        {MONTH_NAMES.map((m, idx) => (
+          <option key={m} value={idx}>{m}</option>
+        ))}
+      </select>
+      <span className="text-xs text-slate-400">to</span>
+      <select
+        value={config?.endMonth ?? defaults.endMonth}
+        onChange={(e) => onChange({ ...config, endMonth: Number(e.target.value) })}
+        className="border border-slate-300 rounded-lg p-1 text-xs font-semibold"
+      >
+        {MONTH_NAMES.map((m, idx) => (
+          <option key={m} value={idx}>{m}</option>
+        ))}
+      </select>
+    </div>
+  </div>
+);
+
 const SettingsModal = ({ settings, set, saving, onSave, onClose }) => {
   return (
     <div
@@ -263,83 +310,24 @@ const SettingsModal = ({ settings, set, saving, onSave, onClose }) => {
               <p className="text-xs text-slate-500 mb-3">Define month ranges used for automated semester assignment.</p>
 
               <div className="space-y-3 bg-slate-50 p-3 rounded-xl border border-slate-200">
-                {/* 1st Semester */}
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                  <span className="text-xs font-bold text-slate-700 w-28">1st Semester</span>
-                  <div className="flex items-center gap-2">
-                    <select
-                      value={settings.semConfig?.firstSem?.startMonth ?? 7}
-                      onChange={(e) => set("semConfig", { ...settings.semConfig, firstSem: { ...settings.semConfig.firstSem, startMonth: Number(e.target.value) } })}
-                      className="border border-slate-300 rounded-lg p-1 text-xs font-semibold"
-                    >
-                      {MONTH_NAMES.map((m, idx) => (
-                        <option key={m} value={idx}>{m}</option>
-                      ))}
-                    </select>
-                    <span className="text-xs text-slate-400">to</span>
-                    <select
-                      value={settings.semConfig?.firstSem?.endMonth ?? 11}
-                      onChange={(e) => set("semConfig", { ...settings.semConfig, firstSem: { ...settings.semConfig.firstSem, endMonth: Number(e.target.value) } })}
-                      className="border border-slate-300 rounded-lg p-1 text-xs font-semibold"
-                    >
-                      {MONTH_NAMES.map((m, idx) => (
-                        <option key={m} value={idx}>{m}</option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-
-                {/* 2nd Semester */}
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                  <span className="text-xs font-bold text-slate-700 w-28">2nd Semester</span>
-                  <div className="flex items-center gap-2">
-                    <select
-                      value={settings.semConfig?.secondSem?.startMonth ?? 0}
-                      onChange={(e) => set("semConfig", { ...settings.semConfig, secondSem: { ...settings.semConfig.secondSem, startMonth: Number(e.target.value) } })}
-                      className="border border-slate-300 rounded-lg p-1 text-xs font-semibold"
-                    >
-                      {MONTH_NAMES.map((m, idx) => (
-                        <option key={m} value={idx}>{m}</option>
-                      ))}
-                    </select>
-                    <span className="text-xs text-slate-400">to</span>
-                    <select
-                      value={settings.semConfig?.secondSem?.endMonth ?? 4}
-                      onChange={(e) => set("semConfig", { ...settings.semConfig, secondSem: { ...settings.semConfig.secondSem, endMonth: Number(e.target.value) } })}
-                      className="border border-slate-300 rounded-lg p-1 text-xs font-semibold"
-                    >
-                      {MONTH_NAMES.map((m, idx) => (
-                        <option key={m} value={idx}>{m}</option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-
-                {/* Short Term */}
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                  <span className="text-xs font-bold text-slate-700 w-28">Short Term</span>
-                  <div className="flex items-center gap-2">
-                    <select
-                      value={settings.semConfig?.shortTerm?.startMonth ?? 5}
-                      onChange={(e) => set("semConfig", { ...settings.semConfig, shortTerm: { ...settings.semConfig.shortTerm, startMonth: Number(e.target.value) } })}
-                      className="border border-slate-300 rounded-lg p-1 text-xs font-semibold"
-                    >
-                      {MONTH_NAMES.map((m, idx) => (
-                        <option key={m} value={idx}>{m}</option>
-                      ))}
-                    </select>
-                    <span className="text-xs text-slate-400">to</span>
-                    <select
-                      value={settings.semConfig?.shortTerm?.endMonth ?? 6}
-                      onChange={(e) => set("semConfig", { ...settings.semConfig, shortTerm: { ...settings.semConfig.shortTerm, endMonth: Number(e.target.value) } })}
-                      className="border border-slate-300 rounded-lg p-1 text-xs font-semibold"
-                    >
-                      {MONTH_NAMES.map((m, idx) => (
-                        <option key={m} value={idx}>{m}</option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
+                <SemesterRow
+                  label="1st Semester"
+                  config={settings.semConfig?.firstSem}
+                  defaults={DEFAULT_SEMESTER_CONFIG.firstSem}
+                  onChange={(v) => set("semConfig", { ...settings.semConfig, firstSem: v })}
+                />
+                <SemesterRow
+                  label="2nd Semester"
+                  config={settings.semConfig?.secondSem}
+                  defaults={DEFAULT_SEMESTER_CONFIG.secondSem}
+                  onChange={(v) => set("semConfig", { ...settings.semConfig, secondSem: v })}
+                />
+                <SemesterRow
+                  label="Short Term"
+                  config={settings.semConfig?.shortTerm}
+                  defaults={DEFAULT_SEMESTER_CONFIG.shortTerm}
+                  onChange={(v) => set("semConfig", { ...settings.semConfig, shortTerm: v })}
+                />
               </div>
             </div>
 
@@ -370,6 +358,7 @@ function LeaderboardControl() {
   });
 
   const [records, setRecords] = useState([]);
+  const [countingPeriod, setCountingPeriod] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -411,6 +400,8 @@ function LeaderboardControl() {
         close_date: data.close_date || "",
         semConfig: data.semConfig || DEFAULT_SEMESTER_CONFIG,
       });
+      // The date range whose points the public leaderboard is counting.
+      setCountingPeriod(data.period || null);
     } catch (error) {
       console.error("Failed to fetch leaderboard settings:", error);
     }
@@ -442,7 +433,16 @@ function LeaderboardControl() {
       settings.close_date &&
       settings.open_date > settings.close_date
     ) {
-      window.alert("Open date cannot be later than close date.");
+      showToast("Open date cannot be later than close date.");
+      return;
+    }
+
+    if (
+      !(await confirmAction({
+        message: "Save these leaderboard settings?",
+        confirmLabel: "Save",
+      }))
+    ) {
       return;
     }
 
@@ -457,11 +457,11 @@ function LeaderboardControl() {
         semConfig: settings.semConfig,
       });
 
-      window.alert("Leaderboard settings updated.");
+      showToast("Leaderboard settings updated.");
       await fetchSettings();
     } catch (error) {
       console.error("Failed to update leaderboard settings:", error);
-      window.alert("Failed to update leaderboard settings.");
+      showToast("Failed to update leaderboard settings.");
     } finally {
       setSaving(false);
     }
@@ -504,7 +504,7 @@ function LeaderboardControl() {
     const matchesSearch =
       record.player_name?.toLowerCase().includes(searchText) ||
       reasonLabel(record.reason)?.toLowerCase().includes(searchText) ||
-      String(record.item_id || "").toLowerCase().includes(searchText);
+      String(record.item_id ?? "").toLowerCase().includes(searchText);
 
     if (!matchesSearch) return false;
 
@@ -527,32 +527,30 @@ function LeaderboardControl() {
   });
 
   const totalPoints = filteredRecords.reduce((sum, r) => sum + (Number(r.points) || 0), 0);
-  const totalPages = Math.ceil(filteredRecords.length / ITEMS_PER_PAGE);
+
+  // Generate Report: each person's total for the records in view (same
+  // search and filters), highest first. Grouped by ID number, so the same
+  // student is one row even if their name was typed differently.
+  const pointsPerUser = Object.values(
+    filteredRecords.reduce((acc, r) => {
+      const rawId = String(r.student_id || "").trim();
+      const id = ["null", "none", "undefined"].includes(rawId.toLowerCase()) ? "" : rawId;
+      const key = id || `name:${String(r.player_name || "").trim().toLowerCase()}`;
+      if (!acc[key]) {
+        acc[key] = { key, id, name: r.player_name || "-", surrendered: 0, claimed: 0, points: 0 };
+      }
+      const row = acc[key];
+      if (r.reason === "SURRENDER_ITEM") row.surrendered += 1;
+      if (r.reason === "ITEM_CLAIMED") row.claimed += 1;
+      row.points += Number(r.points) || 0;
+      if (r.player_name) row.name = r.player_name;
+      return acc;
+    }, {})
+  ).sort((a, b) => b.points - a.points || a.name.localeCompare(b.name));
+  const totalPages = Math.ceil(filteredRecords.length / ITEMS_PER_PAGE) || 1;
 
   const startIndex = (currentPage - 1) * ITEMS_PER_PAGE;
   const paginatedRecords = filteredRecords.slice(startIndex, startIndex + ITEMS_PER_PAGE);
-
-  const goToPage = (page) => setCurrentPage(page);
-
-  const getVisiblePages = () => {
-    const maxVisiblePages = 5;
-
-    if (totalPages <= maxVisiblePages) {
-      return Array.from({ length: totalPages }, (_, index) => index + 1);
-    }
-
-    let startPage = currentPage < maxVisiblePages ? 1 : currentPage - 3;
-    let endPage = startPage + maxVisiblePages - 1;
-
-    if (endPage > totalPages) {
-      endPage = totalPages;
-      startPage = totalPages - maxVisiblePages + 1;
-    }
-
-    return Array.from({ length: endPage - startPage + 1 }, (_, index) => startPage + index);
-  };
-
-  const visiblePages = getVisiblePages();
 
   return (
     <div className="bg-white rounded-[18px] border border-[#D8E2EF] shadow-[0_8px_24px_rgba(45,54,109,0.08)] overflow-hidden flex flex-col h-[calc(100vh-135px)]">
@@ -573,262 +571,331 @@ function LeaderboardControl() {
             .no-print { display: none !important; }
             table { page-break-inside: auto; }
             tr { break-inside: avoid; page-break-inside: avoid; }
-            @page { size: A4 landscape; margin: 10mm; }
+            @page { size: A4 portrait; margin: 12mm; }
           }
         `}
       </style>
 
       {/* Header */}
-        <div className="bg-white px-6 sm:px-8 py-4 border-b border-[#D8E2EF] shrink-0">
-          <div className="flex flex-col xl:flex-row xl:items-center xl:justify-between gap-4 shrink-0">
-            <div className="flex items-center gap-3">
-              <div className="w-1.5 h-8 rounded-full bg-[#0B6B8A]" />
-              <div>
-                <h3 className="text-base sm:text-lg font-black uppercase tracking-[0.16em] text-[#071E3D]">
-                  Leaderboard Control for SY {liveSchoolYear} ({liveSem})
-                </h3>
-                <p className="text-xs sm:text-sm text-[#7B8AA6] italic mt-0.5">
-                  Manage leaderboard visibility, scheduling, and point records
+      <div className="bg-white px-6 sm:px-8 py-4 border-b border-[#D8E2EF] shrink-0">
+        <div className="flex flex-col xl:flex-row xl:items-center xl:justify-between gap-4 shrink-0">
+          <div className="flex items-center gap-3">
+            <div className="w-1.5 h-8 rounded-full bg-[#0B6B8A]" />
+            <div>
+              <h3 className="text-base sm:text-lg font-black uppercase tracking-[0.16em] text-[#071E3D]">
+                Leaderboard Control for SY {liveSchoolYear} ({liveSem})
+              </h3>
+              <p className="text-xs sm:text-sm text-[#7B8AA6] italic mt-0.5">
+                Manage leaderboard visibility, scheduling, and point records
+              </p>
+              {countingPeriod?.start && countingPeriod?.end && (
+                <p className="text-[11px] sm:text-xs font-semibold text-[#0B6B8A] mt-0.5">
+                  Public ranking counts points earned{" "}
+                  {new Date(`${countingPeriod.start}T00:00:00`).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+                  {" – "}
+                  {new Date(`${countingPeriod.end}T00:00:00`).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+                  {" "}(set by the semester months in Settings)
                 </p>
-              </div>
-            </div>
-
-            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 w-full xl:w-auto">
-              <div className="relative w-full sm:w-[300px]">
-                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-[#0B6B8A] text-sm">🔍</span>
-                <input
-                  value={search}
-                  onChange={(e) => {
-                    setSearch(e.target.value);
-                    setCurrentPage(1);
-                  }}
-                  placeholder="Search point records..."
-                  className="w-full pl-10 pr-4 py-2.5 border border-[#CBD8E8] rounded-full text-sm outline-none bg-white text-[#071E3D] placeholder:text-[#8A98B3] focus:ring-2 focus:ring-[#0B6B8A]/20 focus:border-[#0B6B8A] transition-all"
-                />
-              </div>
-
-              <span
-                className={`w-fit rounded-full px-3 py-1 text-xs font-black uppercase ${
-                  settings.is_active ? "bg-green-100 text-green-700" : "bg-red-100 text-red-600"
-                }`}
-              >
-                {settings.is_active ? "Active" : "Inactive"}
-              </span>
-
-              <button
-                onClick={() => setSettingsOpen(true)}
-                className="flex items-center gap-2 px-6 py-2.5 rounded-full bg-[#2D366D] text-white font-black uppercase tracking-[0.1em] text-xs shadow-[0_6px_14px_rgba(45,54,109,0.25)] hover:bg-[#24305C] transition-all whitespace-nowrap"
-              >
-                <Settings size={14} /> Settings
-              </button>
+              )}
             </div>
           </div>
-        </div>
 
-        {/* Filters + Report */}
-        <div className="px-6 sm:px-8 py-4 border-b border-[#D8E2EF] shrink-0 no-print">
-          <div className="flex flex-wrap items-end gap-4">
-            <div className="flex items-center gap-2 text-slate-400 pb-2.5">
-              <Filter size={14} />
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 w-full xl:w-auto">
+            <div className="relative w-full sm:w-[300px]">
+              <span className="absolute left-4 top-1/2 -translate-y-1/2 text-[#0B6B8A] text-sm">🔍</span>
+              <input
+                value={search}
+                onChange={(e) => {
+                  setSearch(e.target.value);
+                  setCurrentPage(1);
+                }}
+                placeholder="Search point records..."
+                className="w-full pl-10 pr-4 py-2.5 border border-[#CBD8E8] rounded-full text-sm outline-none bg-white text-[#071E3D] placeholder:text-[#8A98B3] focus:ring-2 focus:ring-[#0B6B8A]/20 focus:border-[#0B6B8A] transition-all"
+              />
             </div>
 
-            {/* Multi-Select Year Filter */}
-            <MultiSelectFilter
-              label="School Year"
-              selectedValues={filters.year}
-              onChange={(v) => setFilters((f) => ({ ...f, year: v }))}
-              options={YEAR_OPTIONS}
-            />
+            <span
+              className={`w-fit rounded-full px-3 py-1 text-xs font-black uppercase ${
+                settings.is_active ? "bg-green-100 text-green-700" : "bg-red-100 text-red-600"
+              }`}
+            >
+              {settings.is_active ? "Active" : "Inactive"}
+            </span>
 
-            {/* Multi-Select Month Filter */}
-            <MultiSelectFilter
-              label="Month"
-              selectedValues={filters.month}
-              onChange={(v) => setFilters((f) => ({ ...f, month: v }))}
-              options={MONTH_NAMES}
-            />
+            <button
+              onClick={() => setSettingsOpen(true)}
+              className="flex items-center gap-2 px-6 py-2.5 rounded-full bg-[#2D366D] text-white font-black uppercase tracking-[0.1em] text-xs shadow-[0_6px_14px_rgba(45,54,109,0.25)] hover:bg-[#24305C] transition-all whitespace-nowrap"
+            >
+              <Settings size={14} /> Settings
+            </button>
+          </div>
+        </div>
+      </div>
 
-            {/* Single Select Semester Filter */}
-            <FilterSelect
-              label="Semester"
-              value={filters.semester}
-              onChange={(v) => setFilters((f) => ({ ...f, semester: v }))}
-              options={SEMESTER_OPTIONS}
-            />
+      {/* Filters + Report */}
+      <div className="px-6 sm:px-8 py-4 border-b border-[#D8E2EF] shrink-0 no-print">
+        <div className="flex flex-wrap items-end gap-4">
+          <div className="flex items-center gap-2 text-slate-400 pb-2.5">
+            <Filter size={14} />
+          </div>
 
-            <div className="flex items-center gap-4 ml-auto">
-              {isFiltered && (
-                <button
-                  type="button"
-                  onClick={resetFilters}
-                  className="flex items-center gap-1 text-xs font-black text-rose-500 hover:text-rose-600 pb-2.5"
-                >
-                  <X size={12} />
-                  Clear ({activeFilterCount})
-                </button>
-              )}
+          <MultiSelectFilter
+            label="School Year"
+            selectedValues={filters.year}
+            onChange={(v) => setFilters((f) => ({ ...f, year: v }))}
+            options={YEAR_OPTIONS}
+          />
 
+          <MultiSelectFilter
+            label="Month"
+            selectedValues={filters.month}
+            onChange={(v) => setFilters((f) => ({ ...f, month: v }))}
+            options={MONTH_NAMES}
+          />
+
+          <FilterSelect
+            label="Semester"
+            value={filters.semester}
+            onChange={(v) => setFilters((f) => ({ ...f, semester: v }))}
+            options={SEMESTER_OPTIONS}
+          />
+
+          <div className="flex items-center gap-4 ml-auto">
+            {isFiltered && (
               <button
                 type="button"
-                onClick={() => window.print()}
-                className="flex items-center gap-2 px-6 py-2.5 rounded-full bg-[#2D366D] text-white font-black uppercase tracking-[0.1em] text-xs shadow-[0_6px_14px_rgba(45,54,109,0.25)] hover:bg-[#24305C] transition-all whitespace-nowrap shrink-0"
+                onClick={resetFilters}
+                className="flex items-center gap-1 text-xs font-black text-rose-500 hover:text-rose-600 pb-2.5"
               >
-                <Printer size={14} />
-                Generate Report
+                <X size={12} />
+                Clear ({activeFilterCount})
               </button>
-            </div>
+            )}
+
+            <button
+              type="button"
+              onClick={() => window.print()}
+              className="flex items-center gap-2 px-6 py-2.5 rounded-full bg-[#2D366D] text-white font-black uppercase tracking-[0.1em] text-xs shadow-[0_6px_14px_rgba(45,54,109,0.25)] hover:bg-[#24305C] transition-all whitespace-nowrap shrink-0"
+            >
+              <Printer size={14} />
+              Generate Report
+            </button>
           </div>
         </div>
+      </div>
 
-        {/* Content Table */}
-        <div id="print-report" className="flex-1 overflow-auto bg-white">
-          <div className="hidden print:block px-6 pt-6 pb-2">
-            <h2 className="text-xl font-black text-[#071E3D]">
-              Points Tracking Report — SY {reportSchoolYear} ({reportSem})
-            </h2>
-            <p className="mt-1 text-sm text-slate-500">
-              Generated: {new Date().toLocaleDateString()}{" "}
-              {new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-            </p>
-            <p className="mt-1 text-sm text-slate-500">
-              {filteredRecords.length} records &middot; {totalPoints} total points awarded
+      {/* Content Table */}
+      <div id="print-report" className="flex-1 overflow-auto bg-white">
+        <div className="hidden print:block px-6 pt-6 pb-4">
+          {/* Letterhead */}
+          <div className="flex items-center justify-between gap-3 pb-2.5 border-b-4 border-double border-black">
+            <div className="flex items-center gap-1.5 shrink-0">
+              <img src={saoLogo} alt="Student Affairs Office seal" className="w-[50px] h-[50px] object-contain" />
+              <img src={slcLogo} alt={`${SCHOOL_NAME} seal`} className="w-[50px] h-[50px] object-contain" />
+            </div>
+            <div className="flex-1 text-center px-2">
+              <p className="text-[17px] font-bold text-black" style={{ fontFamily: "Georgia, 'Times New Roman', serif" }}>
+                {SCHOOL_NAME}
+              </p>
+              <p className="text-[10.5px] font-semibold text-slate-800 mt-0.5">{SCHOOL_ADDRESS}</p>
+              <p className="text-[9.5px] font-bold text-[#2D366D] uppercase tracking-[2px] mt-0.5">
+                Student Affairs Office
+              </p>
+            </div>
+            <div className="flex items-center justify-end shrink-0">
+              <img src={seekBalikLogo} alt="Seek &amp; Balik logo" className="w-[54px] h-[54px] object-contain" />
+            </div>
+          </div>
+
+          {/* Brand bar */}
+          <div className="text-center pt-2 pb-2.5 border-b border-slate-400">
+            <p className="text-[13px] font-bold tracking-[1px] text-[#2D366D]">Seek &amp; Balik</p>
+            <p className="text-[8.5px] font-semibold tracking-[1px] uppercase text-slate-500 mt-0.5">
+              A Lost and Found Management System
             </p>
           </div>
 
-          <table className="w-full min-w-[1000px] table-fixed border-collapse print:hidden">
-            <thead className="sticky top-0 z-10">
-              <tr>
-                <th className="w-[18%] bg-[#0B6B8A] p-4 border border-gray-300 text-center text-[11px] font-black uppercase text-white">Date</th>
-                <th className="w-[20%] bg-[#0B6B8A] p-4 border border-gray-300 text-center text-[11px] font-black uppercase text-white">Student</th>
-                <th className="w-[26%] bg-[#0B6B8A] p-4 border border-gray-300 text-center text-[11px] font-black uppercase text-white">Reason</th>
-                <th className="w-[18%] bg-[#0B6B8A] p-4 border border-gray-300 text-center text-[11px] font-black uppercase text-white">Item ID</th>
-                <th className="w-[18%] bg-[#0B6B8A] p-4 border border-gray-300 text-center text-[11px] font-black uppercase text-white">Points</th>
-              </tr>
-            </thead>
+          {/* Report title */}
+          <h2 className="mt-4 text-center text-base font-black uppercase tracking-wide text-black">
+            Points Tracking Report — SY {reportSchoolYear} ({reportSem})
+          </h2>
 
-            <tbody className="bg-white">
-              {paginatedRecords.length > 0 ? (
-                paginatedRecords.map((record, index) => (
-                  <tr key={record.id} className={`h-[70px] transition-colors ${index % 2 === 0 ? "bg-white" : "bg-[#F6FAFF]"} hover:bg-[#EAF4FF]`}>
-                    <td className="border border-gray-300 p-4 text-center align-middle text-slate-600 text-[14px]">
-                      {new Date(record.created_at).toLocaleString()}
-                    </td>
-                    <td className="truncate border border-gray-300 p-4 text-center align-middle font-bold text-[#071E3D]">
-                      {record.player_name}
-                    </td>
-                    <td className="border border-gray-300 p-4 text-center align-middle text-slate-600 text-[14px]">
-                      {reasonLabel(record.reason)}
-                    </td>
-                    <td className="border border-gray-300 p-4 text-center align-middle text-slate-600 text-[14px]">
-                      {record.item_id || "-"}
-                    </td>
-                    <td className="border border-gray-300 p-4 text-center align-middle font-black text-[#0B6B8A]">
-                      +{record.points}
-                    </td>
-                  </tr>
-                ))
-              ) : (
-                <tr>
-                  <td colSpan={5} className="bg-white py-24 text-center">
-                    <div className="flex flex-col items-center justify-center gap-3">
-                      <span className="text-4xl font-black tracking-tighter text-[#071E3D] opacity-20">
-                        EMPTY
-                      </span>
-                      <p className="text-xs font-bold uppercase tracking-[0.2em] text-[#7B8AA6]">
-                        {isFiltered ? "No point records for this period" : "No point records yet"}
-                      </p>
-                    </div>
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
+          {/* Meta */}
+          <p className="mt-3 text-xs text-slate-700">
+            <span className="font-bold">Generated:</span>{" "}
+            {new Date().toLocaleDateString()}{" "}
+            {new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+          </p>
+          <p className="mt-1 text-xs text-slate-700">
+            <span className="font-bold">Records:</span> {filteredRecords.length}
+            {" · "}
+            <span className="font-bold">Total points awarded:</span> {totalPoints}
+            {" · "}
+            <span className="font-bold">Students:</span> {pointsPerUser.length}
+          </p>
 
-          {/* Print-only Table */}
-          <table className="hidden print:table w-full table-fixed border-collapse">
+          {/* A. Total points per user */}
+          <h3 className="mt-5 mb-2 text-sm font-black uppercase tracking-wide text-black border-b border-slate-400 pb-1">
+            A. Total Points per Student
+          </h3>
+          <table className="w-full table-fixed border-collapse">
             <thead>
               <tr>
-                <th className="w-[18%] bg-[#0B6B8A] p-4 border border-gray-300 text-center text-[11px] font-black uppercase text-white">Date</th>
-                <th className="w-[20%] bg-[#0B6B8A] p-4 border border-gray-300 text-center text-[11px] font-black uppercase text-white">Student</th>
-                <th className="w-[26%] bg-[#0B6B8A] p-4 border border-gray-300 text-center text-[11px] font-black uppercase text-white">Reason</th>
-                <th className="w-[18%] bg-[#0B6B8A] p-4 border border-gray-300 text-center text-[11px] font-black uppercase text-white">Item ID</th>
-                <th className="w-[18%] bg-[#0B6B8A] p-4 border border-gray-300 text-center text-[11px] font-black uppercase text-white">Points</th>
+                <th className="w-[8%] bg-[#0B6B8A] p-2.5 border border-gray-300 text-center text-[11px] font-black uppercase text-white">Rank</th>
+                <th className="w-[30%] bg-[#0B6B8A] p-2.5 border border-gray-300 text-center text-[11px] font-black uppercase text-white">Student</th>
+                <th className="w-[17%] bg-[#0B6B8A] p-2.5 border border-gray-300 text-center text-[11px] font-black uppercase text-white">ID Number</th>
+                <th className="w-[15%] bg-[#0B6B8A] p-2.5 border border-gray-300 text-center text-[11px] font-black uppercase text-white">Items Surrendered</th>
+                <th className="w-[15%] bg-[#0B6B8A] p-2.5 border border-gray-300 text-center text-[11px] font-black uppercase text-white">Items Claimed by Owner</th>
+                <th className="w-[15%] bg-[#0B6B8A] p-2.5 border border-gray-300 text-center text-[11px] font-black uppercase text-white">Total Points</th>
               </tr>
             </thead>
-            <tbody className="bg-white">
-              {filteredRecords.map((record, index) => (
-                <tr key={record.id} className={index % 2 === 0 ? "bg-white" : "bg-[#F6FAFF]"}>
-                  <td className="border border-gray-300 p-3 text-center align-middle text-slate-600 text-[13px]">
+            <tbody>
+              {pointsPerUser.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="border border-gray-300 p-3 text-center text-[13px] text-slate-500">
+                    No point records for this period.
+                  </td>
+                </tr>
+              ) : (
+                pointsPerUser.map((u, index) => (
+                  <tr key={u.key} className={index % 2 === 0 ? "bg-white" : "bg-[#F6FAFF]"}>
+                    <td className="border border-gray-300 p-2.5 text-center text-[13px] text-slate-700">{index + 1}</td>
+                    <td className="border border-gray-300 p-2.5 text-center text-[13px] font-bold text-[#071E3D]">{u.name}</td>
+                    <td className="border border-gray-300 p-2.5 text-center text-[13px] text-slate-600">{u.id || "-"}</td>
+                    <td className="border border-gray-300 p-2.5 text-center text-[13px] text-slate-600">{u.surrendered}</td>
+                    <td className="border border-gray-300 p-2.5 text-center text-[13px] text-slate-600">{u.claimed}</td>
+                    <td className="border border-gray-300 p-2.5 text-center text-[13px] font-black text-[#0B6B8A]">{u.points}</td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+            {pointsPerUser.length > 0 && (
+              <tfoot>
+                <tr>
+                  <td colSpan={5} className="border border-gray-300 p-2.5 text-right text-[13px] font-black text-[#071E3D]">
+                    Total points awarded
+                  </td>
+                  <td className="border border-gray-300 p-2.5 text-center text-[13px] font-black text-[#0B6B8A]">{totalPoints}</td>
+                </tr>
+              </tfoot>
+            )}
+          </table>
+
+          {/* B. Every point record */}
+          <h3 className="mt-6 text-sm font-black uppercase tracking-wide text-black border-b border-slate-400 pb-1">
+            B. Point Records
+          </h3>
+        </div>
+
+        <table className="w-full min-w-[1000px] table-fixed border-collapse print:hidden">
+          <thead className="sticky top-0 z-10">
+            <tr>
+              <th className="w-[18%] bg-[#0B6B8A] p-4 border border-gray-300 text-center text-[11px] font-black uppercase text-white">Date</th>
+              <th className="w-[20%] bg-[#0B6B8A] p-4 border border-gray-300 text-center text-[11px] font-black uppercase text-white">Student</th>
+              <th className="w-[26%] bg-[#0B6B8A] p-4 border border-gray-300 text-center text-[11px] font-black uppercase text-white">Reason</th>
+              <th className="w-[18%] bg-[#0B6B8A] p-4 border border-gray-300 text-center text-[11px] font-black uppercase text-white">Item ID</th>
+              <th className="w-[18%] bg-[#0B6B8A] p-4 border border-gray-300 text-center text-[11px] font-black uppercase text-white">Points</th>
+            </tr>
+          </thead>
+
+          <tbody className="bg-white">
+            {paginatedRecords.length > 0 ? (
+              paginatedRecords.map((record, index) => (
+                <tr key={record.id} className={`h-[70px] transition-colors ${index % 2 === 0 ? "bg-white" : "bg-[#F6FAFF]"} hover:bg-[#EAF4FF]`}>
+                  <td className="border border-gray-300 p-4 text-center align-middle text-slate-600 text-[14px]">
                     {new Date(record.created_at).toLocaleString()}
                   </td>
-                  <td className="border border-gray-300 p-3 text-center align-middle font-bold text-[#071E3D] text-[13px]">
+                  <td className="truncate border border-gray-300 p-4 text-center align-middle font-bold text-[#071E3D]">
                     {record.player_name}
                   </td>
-                  <td className="border border-gray-300 p-3 text-center align-middle text-slate-600 text-[13px]">
+                  <td className="border border-gray-300 p-4 text-center align-middle text-slate-600 text-[14px]">
                     {reasonLabel(record.reason)}
                   </td>
-                  <td className="border border-gray-300 p-3 text-center align-middle text-slate-600 text-[13px]">
-                    {record.item_id || "-"}
+                  <td className="border border-gray-300 p-4 text-center align-middle text-slate-600 text-[14px]">
+                    {getItemId(record)}
                   </td>
-                  <td className="border border-gray-300 p-3 text-center align-middle font-black text-[#0B6B8A] text-[13px]">
+                  <td className="border border-gray-300 p-4 text-center align-middle font-black text-[#0B6B8A]">
                     +{record.points}
                   </td>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              ))
+            ) : (
+              <tr>
+                <td colSpan={5} className="bg-white py-24 text-center">
+                  <div className="flex flex-col items-center justify-center gap-3">
+                    <span className="text-4xl font-black tracking-tighter text-[#071E3D] opacity-20">
+                      EMPTY
+                    </span>
+                    <p className="text-xs font-bold uppercase tracking-[0.2em] text-[#7B8AA6]">
+                      {isFiltered ? "No point records for this period" : "No point records yet"}
+                    </p>
+                  </div>
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
 
-        {/* Pagination Footer */}
-        {filteredRecords.length > 0 && (
-          <div className="border-t border-[#D8E2EF] bg-white px-6 py-4 flex items-center justify-between shrink-0 no-print">
-            <p className="text-xs font-bold text-[#7B8AA6]">
-              Showing {startIndex + 1}-
-              {Math.min(startIndex + ITEMS_PER_PAGE, filteredRecords.length)} of{" "}
-              {filteredRecords.length}
-              {isFiltered && (
-                <span className="ml-2 text-[#0B6B8A]">({totalPoints} pts in view)</span>
-              )}
-            </p>
+        {/* Print-only Table */}
+        <table className="hidden print:table w-full table-fixed border-collapse">
+          <thead>
+            <tr>
+              <th className="w-[18%] bg-[#0B6B8A] p-4 border border-gray-300 text-center text-[11px] font-black uppercase text-white">Date</th>
+              <th className="w-[20%] bg-[#0B6B8A] p-4 border border-gray-300 text-center text-[11px] font-black uppercase text-white">Student</th>
+              <th className="w-[26%] bg-[#0B6B8A] p-4 border border-gray-300 text-center text-[11px] font-black uppercase text-white">Reason</th>
+              <th className="w-[18%] bg-[#0B6B8A] p-4 border border-gray-300 text-center text-[11px] font-black uppercase text-white">Item ID</th>
+              <th className="w-[18%] bg-[#0B6B8A] p-4 border border-gray-300 text-center text-[11px] font-black uppercase text-white">Points</th>
+            </tr>
+          </thead>
+          <tbody className="bg-white">
+            {filteredRecords.map((record, index) => (
+              <tr key={record.id} className={index % 2 === 0 ? "bg-white" : "bg-[#F6FAFF]"}>
+                <td className="border border-gray-300 p-3 text-center align-middle text-slate-600 text-[13px]">
+                  {new Date(record.created_at).toLocaleString()}
+                </td>
+                <td className="border border-gray-300 p-3 text-center align-middle font-bold text-[#071E3D] text-[13px]">
+                  {record.player_name}
+                </td>
+                <td className="border border-gray-300 p-3 text-center align-middle text-slate-600 text-[13px]">
+                  {reasonLabel(record.reason)}
+                </td>
+                <td className="border border-gray-300 p-3 text-center align-middle text-slate-600 text-[13px]">
+                  {getItemId(record)}
+                </td>
+                <td className="border border-gray-300 p-3 text-center align-middle font-black text-[#0B6B8A] text-[13px]">
+                  +{record.points}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+          <tfoot>
+            <tr>
+              <td colSpan={4} className="border border-gray-300 p-3 text-right align-middle font-black text-[#071E3D] text-[13px]">
+                Total points awarded
+              </td>
+              <td className="border border-gray-300 p-3 text-center align-middle font-black text-[#0B6B8A] text-[13px]">
+                {totalPoints}
+              </td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
 
-            <div className="flex items-center justify-center gap-2">
-              <button
-                type="button"
-                onClick={() => goToPage(Math.max(currentPage - 1, 1))}
-                disabled={currentPage === 1}
-                className="h-8 rounded-lg border border-[#D8E2EF] px-3 text-[11px] font-black uppercase tracking-wide text-[#0B6B8A] transition hover:bg-[#EAF4FF] disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                Prev
-              </button>
+      {/* Pagination Footer */}
+      <Pagination
+        className="no-print"
+        currentPage={currentPage}
+        totalItems={filteredRecords.length}
+        pageSize={ITEMS_PER_PAGE}
+        onPageChange={setCurrentPage}
+        extra={
+          isFiltered && (
+            <span className="ml-2 text-[#0B6B8A]">({totalPoints} pts in view)</span>
+          )
+        }
+      />
 
-              {visiblePages.map((page) => (
-                <button
-                  key={page}
-                  type="button"
-                  onClick={() => goToPage(page)}
-                  className={`h-8 min-w-8 rounded-lg px-2.5 text-xs font-black transition ${
-                    currentPage === page
-                      ? "bg-[#0B6B8A] text-white shadow-md"
-                      : "border border-[#D8E2EF] bg-white text-[#0B6B8A] hover:bg-[#EAF4FF]"
-                  }`}
-                >
-                  {page}
-                </button>
-              ))}
-
-              <button
-                type="button"
-                onClick={() => goToPage(Math.min(currentPage + 1, totalPages))}
-                disabled={currentPage === totalPages}
-                className="h-8 rounded-lg border border-[#D8E2EF] px-3 text-[11px] font-black uppercase tracking-wide text-[#0B6B8A] transition hover:bg-[#EAF4FF] disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                Next
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* Settings Modal */}
+      {/* Settings Modal */}
       {settingsOpen && (
         <SettingsModal
           settings={settings}
@@ -842,4 +909,4 @@ function LeaderboardControl() {
   );
 }
 
-export default LeaderboardControl;
+export default LeaderboardControl;

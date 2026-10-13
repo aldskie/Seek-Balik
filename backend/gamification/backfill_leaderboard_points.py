@@ -126,7 +126,7 @@ class Command(BaseCommand):
                         item.save(update_fields=["surrender_points_awarded"])
 
             # Claimed bonus
-            if item.status in ("Claimed", "Returned") and not item.claimed_bonus_awarded:
+            if item.status == "Claimed" and not item.claimed_bonus_awarded:
                 self.stdout.write(
                     f"  Awarding {CLAIMED_BONUS_POINTS} claim bonus point(s) to "
                     f"{item.poster_name} ({item.student_id}) for item #{item.id}"

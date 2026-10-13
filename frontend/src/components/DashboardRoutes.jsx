@@ -7,28 +7,31 @@ import FoundItems from "../pages/FoundItems";
 import Reports from "../pages/Reports";
 import Users from "../pages/Users";
 import ModeratorLostItems from "../pages/ModeratorLostItems";
-import ClaimRequests from "../pages/ClaimRequests";
+import ClaimRequests from "../pages/Claimrequests";
 import LeaderboardControl from "../pages/LeaderboardControl";
 import ActivityLogs from "../pages/ActivityLogs";
+import AdminHelpCenter from "../pages/AdminHelpCenter";
+import Archive from "../pages/Archive";
+import ReportIssues from "../pages/ReportIssues";
+import BackupRestore from "../pages/BackupandRestore";
 
-
-import RequireRole from "../components/RequireRole";
-import QuestionBank from "../components/QuestionBank";
+import RequireRole from "./RequireRole";
+import QuestionBank from "./QuestionBank";
 
 const DashboardRoutes = () => {
   return (
     <Routes>
-      {/* 1. Main Dashboard (/dashboard) */}
+      {/* Dashboard Home */}
       <Route index element={<DashboardHome />} />
 
-      {/* 2. Standard Items */}
+      {/* Lost & Found */}
       <Route path="lost-items" element={<LostItems />} />
       <Route path="surrendered-items" element={<FoundItems />} />
       <Route path="claim-requests" element={<ClaimRequests />} />
       <Route path="reports" element={<Reports />} />
       <Route path="leaderboard" element={<LeaderboardControl />} />
 
-      {/* 3. Moderator Items */}
+      {/* Moderator */}
       <Route
         path="moderator-lost"
         element={
@@ -38,7 +41,7 @@ const DashboardRoutes = () => {
         }
       />
 
-      {/* 4. Admin Items */}
+      {/* Admin */}
       <Route
         path="users"
         element={
@@ -48,12 +51,46 @@ const DashboardRoutes = () => {
         }
       />
 
-      {/* 5. Utilities */}
+      {/* Utilities */}
       <Route path="utilities/question-bank" element={<QuestionBank />} />
       <Route path="utilities/activity-logs" element={<ActivityLogs />} />
       <Route path="activity-logs" element={<ActivityLogs />} />
+      <Route
+        path="utilities/report-issues"
+        element={
+          <RequireRole allowedRoles={["admin"]}>
+            <ReportIssues />
+          </RequireRole>
+        }
+      />
+      <Route
+        path="utilities/archive"
+        element={
+          <RequireRole allowedRoles={["admin", "moderator"]}>
+            <Archive />
+          </RequireRole>
+        }
+      />
+      <Route
+        path="utilities/backup-restore"
+        element={
+          <RequireRole allowedRoles={["admin"]}>
+            <BackupRestore />
+          </RequireRole>
+        }
+      />
 
-      {/* Fallback inside dashboard */}
+      {/* Help Center (Admin + Moderator) */}
+      <Route
+        path="help-center"
+        element={
+          <RequireRole allowedRoles={["admin", "moderator"]}>
+            <AdminHelpCenter />
+          </RequireRole>
+        }
+      />
+
+      {/* Fallback */}
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>
   );

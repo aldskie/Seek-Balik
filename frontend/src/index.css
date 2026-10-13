@@ -118,3 +118,10 @@ body {
 
 
 }
+
+/* Hide the browser's own password "eye" (Microsoft Edge / old IE) so only
+   the app's show/hide button appears on password fields. */
+input[type="password"]::-ms-reveal,
+input[type="password"]::-ms-clear {
+  display: none;
+}

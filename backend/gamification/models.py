@@ -54,6 +54,10 @@ class LeaderboardSettings(models.Model):
     auto_mode = models.BooleanField(default=False)
     open_date = models.DateField(null=True, blank=True)
     close_date = models.DateField(null=True, blank=True)
+    # Semester month ranges set on the Leaderboard Control page
+    # ({"firstSem": {...}, "secondSem": {...}, "shortTerm": {...}}).
+    # Empty means the page's built-in defaults are used.
+    sem_config = models.JSONField(null=True, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):

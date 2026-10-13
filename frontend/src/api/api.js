@@ -1,16 +1,35 @@
 import axios from "axios";
 
-export const API_URL = "http://localhost:8000/";
+// Backend URL comes from the VITE_API_URL environment variable.
+// - Local: falls back to http://localhost:8000/ (no .env needed)
+// - Production: set VITE_API_URL in Vercel (e.g. https://yourname.pythonanywhere.com/)
+// A trailing slash is added automatically if missing, since every path
+// below is relative ("account/login/", "item/details/", ...).
+const RAW_API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000/";
+export const API_URL = RAW_API_URL.endsWith("/") ? RAW_API_URL : `${RAW_API_URL}/`;
 
 const api = axios.create({
   baseURL: API_URL,
 });
 
 // Automatic JWT Token Interceptor
+// Login / sign-up / password-reset requests never carry the saved token: a
+// stale token (expired session, deleted or disabled account) would make the
+// server reject the request with 401 before it even checks the password.
+const PUBLIC_AUTH_PATHS = [
+  "account/login/",
+  "account/refresh/",
+  "account/register/",
+  "account/verify-email/",
+  "account/password-reset/",
+];
+
 api.interceptors.request.use(
   (config) => {
     const token = localStorage.getItem("accessToken");
-    if (token) {
+    const url = config.url || "";
+    const isPublicAuth = PUBLIC_AUTH_PATHS.some((p) => url.includes(p));
+    if (token && !isPublicAuth) {
       config.headers.Authorization = `Bearer ${token}`;
     }
     return config;
@@ -21,65 +40,31 @@ api.interceptors.request.use(
 // ==========================================================
 // 401 HANDLING WITH REAL TOKEN REFRESH
 //
-// The previous version of this interceptor deleted both tokens on a
-// 401 and retried the SAME request with the Authorization header
-// stripped entirely — which just guarantees a second 401 from any
-// protected endpoint (e.g. claim/, the staff-only claims list). It
-// never actually attempted a refresh, even though refreshToken was
-// already being stored on login. Net effect: once an access token
-// expired mid-session, every subsequent request (including
-// ClaimRequests.jsx's 5s polling of getClaims()) failed silently
-// forever, which looked exactly like "new claims aren't showing up" —
-// the claims were fine server-side, the moderator's browser had just
-// silently lost the ability to read them.
+// Calls the real SimpleJWT refresh endpoint once, queues any other
+// requests that 401 while that refresh is in flight (so a burst of
+// parallel calls doesn't trigger multiple refresh attempts), and
+// retries each original request with the new access token. Only falls
+// through to logging the user out if the refresh itself fails.
 //
-// This version calls the real SimpleJWT refresh endpoint once,
-// queues any other requests that 401 while that refresh is in
-// flight (so a burst of parallel calls doesn't trigger multiple
-// refresh attempts), and retries each original request with the new
-// access token. Only falls through to logging the user out if the
-// refresh itself fails (i.e. the refresh token is also expired/invalid).
+// REFRESH_ENDPOINT is "account/refresh/" (registered as
+// path('refresh/', refresh_token, ...) under the account/ prefix).
 //
-// ASSUMPTION: the refresh endpoint lives at "account/token/refresh/",
-// matching the existing account/login/, account/register/,
-// account/current/ naming pattern in this file. If your urls.py maps
-// SimpleJWT's TokenRefreshView somewhere else (e.g. "token/refresh/"),
-// update REFRESH_ENDPOINT below to match.
+// Login/refresh requests are excluded from the refresh-and-retry logic
+// entirely; their 401s just reject normally and the login form handles
+// them as "invalid credentials".
 //
-// FIX: two gaps in the original version of this interceptor:
-//
-// 1. A 401 from account/login/ itself (e.g. wrong password on the
-//    login screen) used to fall into this same refresh flow and try
-//    refreshing with whatever stale refreshToken happened to still be
-//    sitting in localStorage from a previous session — completely
-//    unrelated to the login attempt that just failed. Login/refresh
-//    requests are now excluded from the refresh-and-retry logic
-//    entirely; their 401s just reject normally and the login form
-//    handles them as "invalid credentials".
-//
-// 2. When the refresh token was ALSO expired/invalid (a genuine "your
-//    session is over" state), clearAuth() ran but nothing told the
-//    rest of the app to stop acting like it was still logged in.
-//    Pages that poll on an interval (ClaimRequests.jsx's 5s getClaims()
-//    poll, Dashboard.jsx's fetchItems/fetchUsers/fetchClaims) kept
-//    firing forever: no accessToken -> request goes out unauthenticated
-//    -> 401 comes back -> interceptor finds no refreshToken -> rejects
-//    immediately without even trying to refresh. That produced the
-//    endless stream of bare 401s in the console with no further
-//    refresh attempts. onAuthFailure() below now runs a single hard
-//    redirect to /login whenever the session is truly over, which
-//    unmounts every page (and every setInterval on it) instead of
-//    leaving them to poll a dead session indefinitely.
+// When the refresh token is also expired/invalid, onAuthFailure() runs
+// a single hard redirect to /login, which unmounts every page (and every
+// setInterval on it) instead of leaving them to poll a dead session.
 // ==========================================================
 
-const REFRESH_ENDPOINT = "account/token/refresh/";
+const REFRESH_ENDPOINT = "account/refresh/";
 const LOGIN_ENDPOINT = "account/login/";
 
 let isRefreshing = false;
 let refreshSubscribers = [];
 // Guards against redirecting more than once if several requests hit a
-// hard auth failure around the same time (e.g. a burst of polling
-// calls all 401'ing together).
+// hard auth failure around the same time.
 let redirectingToLogin = false;
 
 const onRefreshed = (newToken) => {
@@ -90,20 +75,21 @@ const onRefreshed = (newToken) => {
 const clearAuth = () => {
   localStorage.removeItem("accessToken");
   localStorage.removeItem("refreshToken");
+  // Also forget the logged-in state so the app shows the logged-out view.
+  localStorage.removeItem("isLoggedIn");
+  localStorage.removeItem("userRole");
+  localStorage.removeItem("userName");
 };
 
-// The session is genuinely over — clear tokens and send the user back
-// to /login with a single full navigation. A full navigation (rather
-// than a router push) guarantees every mounted page — and every
-// setInterval/polling loop on it — is torn down, instead of quietly
-// continuing to hit protected endpoints with no token.
+// The session is genuinely over: clear it and reload the home page once, so
+// every page (and every polling timer) starts again logged out.
 const onAuthFailure = () => {
   clearAuth();
   if (redirectingToLogin) return;
   redirectingToLogin = true;
 
-  if (typeof window !== "undefined" && window.location.pathname !== "/login") {
-    window.location.href = "/login";
+  if (typeof window !== "undefined") {
+    window.location.href = "/";
   }
 };
 
@@ -116,15 +102,20 @@ api.interceptors.response.use(
     const originalRequest = error.config;
 
     // Only attempt a refresh-and-retry once per request, and only for
-    // actual 401s. Any other status (403, 500, etc.), a request that's
-    // already been retried once, or the login/refresh endpoints
-    // themselves (see FIX #1 above) just reject normally.
+    // actual 401s.
     if (
       !error.response ||
       error.response.status !== 401 ||
-      originalRequest?.__retriedAfter401 ||
       isAuthEndpoint(originalRequest?.url)
     ) {
+      return Promise.reject(error);
+    }
+
+    // Still 401 even with a freshly refreshed token: the account behind
+    // this session no longer exists or was disabled. End the session so
+    // the app stops looping and public pages work again.
+    if (originalRequest?.__retriedAfter401) {
+      onAuthFailure();
       return Promise.reject(error);
     }
 
@@ -132,15 +123,13 @@ api.interceptors.response.use(
 
     const refreshToken = localStorage.getItem("refreshToken");
     if (!refreshToken) {
-      // Nothing to refresh with — this really is a "logged out" state.
+      // Nothing to refresh with: this really is a "logged out" state.
       onAuthFailure();
       return Promise.reject(error);
     }
 
-    // If a refresh is already in flight (e.g. several polling/parallel
-    // requests 401'd around the same time), queue this request and
-    // resolve it once that single refresh completes, instead of firing
-    // a redundant refresh call per request.
+    // If a refresh is already in flight, queue this request and resolve it
+    // once that single refresh completes.
     if (isRefreshing) {
       return new Promise((resolve, reject) => {
         refreshSubscribers.push((newToken) => {
@@ -181,8 +170,6 @@ api.interceptors.response.use(
     } catch (refreshError) {
       isRefreshing = false;
       onRefreshed(null); // reject every queued request too
-      // The refresh token is also expired/invalid — this is a genuine
-      // "session is over" state, not a one-off network hiccup.
       onAuthFailure();
       return Promise.reject(refreshError);
     }
@@ -208,8 +195,21 @@ export const scheduleMeeting = async (id, data) => {
   return res.data;
 };
 
+// DECLINE A CLAIM (staff-only)
+// Endpoint: PATCH claim/decline/<id>/ (decline_claim in claim/views.py).
+// Requires in claim/urls.py:
+//     path('decline/<int:pk>/', decline_claim, name='decline-claim'),
+// `extra` may include { not_owner: true } for the "Not the Owner" button.
+export const declineClaim = async (id, remarks, extra = {}) => {
+  const res = await api.patch(`claim/decline/${id}/`, {
+    declined_remarks: remarks,
+    ...extra,
+  });
+  return res.data;
+};
+
 // =====================
-// AVAILABLE SCHEDULES (NEW)
+// AVAILABLE SCHEDULES
 // =====================
 
 export const getAvailableSchedules = async () => {
@@ -228,11 +228,66 @@ export const deleteAvailableSchedule = async (id) => {
 };
 
 // =====================
+// BLOCKED (DISABLED) MEETING SLOTS
+// "Manage Slots" calendar in ClaimRequests.jsx. A block with an empty
+// time_slot disables the whole day.
+// =====================
+
+// params: { date } for one day, or { start, end } (YYYY-MM-DD) for a range.
+export const getBlockedSlots = async (params = {}) => {
+  const res = await api.get("claim/blocked-slots/", { params });
+  return res.data;
+};
+
+// data: { date, time_slot ("" = whole day), reason }
+export const createBlockedSlot = async (data) => {
+  const res = await api.post("claim/blocked-slots/", data);
+  return res.data;
+};
+
+export const deleteBlockedSlot = async (id) => {
+  const res = await api.delete(`claim/blocked-slots/${id}/`);
+  return res.data;
+};
+
+// =====================
+// IN-APP NOTIFICATIONS (bell) — backend alerts app
+// =====================
+
+// { unread, results: [{ id, kind, title, body, data, is_read, created_at }] }
+export const getNotifications = async () => {
+  const res = await api.get("alerts/");
+  return res.data;
+};
+
+export const getUnreadNotificationCount = async () => {
+  const res = await api.get("alerts/unread-count/");
+  return res.data?.unread ?? 0;
+};
+
+export const markNotificationRead = async (id) => {
+  const res = await api.post(`alerts/${id}/read/`);
+  return res.data;
+};
+
+export const markAllNotificationsRead = async () => {
+  const res = await api.post("alerts/read-all/");
+  return res.data;
+};
+
+// =====================
 // ITEMS
 // =====================
 
 export async function getItems() {
   const res = await api.get("item/details/");
+  return res.data;
+}
+
+// NEW: items reported by the currently logged-in user.
+// `type` is optional: "Lost" or "Surrendered".
+export async function getMyItems(type) {
+  const res = await api.get("item/mine/", { params: type ? { type } : {} });
   return res.data;
 }
 
@@ -273,11 +328,34 @@ export async function trackItem(ticketCode) {
 // AUTH
 // =====================
 
-import { logActivity } from '../utils/activityLog';
+import { logActivity } from '../utils/Activitylog';
 
 export { logActivity };
 
+// Records that the logged-in user agreed to the Terms and Data Privacy
+// Consent (version = TERMS_VERSION in components/TermsConsentModal.jsx).
+export async function acceptTerms(version) {
+  const res = await api.post("account/terms/accept/", { version });
+  return res.data;
+}
+
+// Ends the session on the server too (blacklists the refresh token).
+// Never throws: logging out locally must always work.
+export async function logoutUser() {
+  const refresh = localStorage.getItem("refreshToken");
+  if (!refresh) return;
+  try {
+    await api.post("account/logout/", { refresh });
+  } catch {
+    /* already invalid or offline - nothing else to do */
+  }
+}
+
 export async function loginUser(username, password) {
+  // A new login always starts from a clean slate.
+  localStorage.removeItem("accessToken");
+  localStorage.removeItem("refreshToken");
+
   const res = await api.post("account/login/", {
     username,
     password,
@@ -300,24 +378,50 @@ export async function loginUser(username, password) {
   return res.data;
 }
 
-// Self-service registration (public "Create Account" form). Unlike
-// createUser() below — which is used by an admin to create an account for
-// someone else and is expected to be called while already authenticated —
-// this is called from RegisterModal.jsx by an anonymous visitor. No tokens
-// are stored here: the backend auto-generates a temporary password and
-// emails it to the school ID address, so the frontend never sees a
-// password to log in with. RegisterModal redirects to /login afterward.
+// ==========================================================
+// SELF-REGISTRATION — TWO STEPS
+//
+// registerUser() (step 1) starts the sign-up and emails a 6-digit
+// code. The account stays unverified — and must be hidden from the
+// Registered Users list by the backend — until verifyEmail() (step 2)
+// confirms the code, activates the account and emails the temporary
+// password. resendVerificationCode() re-sends a code for an
+// unverified account.
+//
+// verifyEmail/resendVerificationCode use plain axios (not the `api`
+// instance) so a stale accessToken can't trigger the 401 refresh flow
+// on what should be a public endpoint.
+//
+// The "registered" activity log entry is written in verifyEmail(), not
+// registerUser(), so Activity Logs only show verified registrations.
+// ==========================================================
+
 export async function registerUser(data) {
   const res = await api.post("account/register/", data);
+  return res.data;
+}
+
+export async function verifyEmail(email, code) {
+  const res = await axios.post(`${API_URL}account/verify-email/`, {
+    email,
+    code,
+  });
 
   logActivity({
-    actor_name: `${data.first_name || ""} ${data.last_name || ""}`.trim() || data.email,
+    actor_name: email,
     actor_role: "student",
     action: "created",
-    target_title: data.email,
+    target_title: email,
     details: "Registered a new student account",
   });
 
+  return res.data;
+}
+
+export async function resendVerificationCode(email) {
+  const res = await axios.post(`${API_URL}account/verify-email/resend/`, {
+    email,
+  });
   return res.data;
 }
 
@@ -336,13 +440,9 @@ export async function getUserById(id) {
   return res.data;
 }
 
-// Self-service profile read/update for the currently logged-in user (used
-// by UserProfile.jsx). Reuses the same "account/current/" endpoint as
-// getCurrentUser() above, since that's already how this backend resolves
-// "the logged-in user" from the JWT — no id needs to be passed in, unlike
-// updateUserById() below which is the admin-editing-someone-else path.
-// NOTE: confirm with your backend whether account/current/ accepts PATCH
-// for partial updates — swap `.patch` to `.put` here if it only supports PUT.
+// Self-service profile read/update for the currently logged-in user
+// (used by UserProfile.jsx). Reuses "account/current/", which handles
+// both GET and PATCH.
 export async function getProfile() {
   const res = await api.get("account/current/");
   return res.data;
@@ -412,6 +512,39 @@ export async function changePassword(current_password, new_password) {
   return res.data;
 }
 
+// ==========================================================
+// FORGOT PASSWORD (public: no login required)
+// Plain axios on purpose, same reasoning as verifyEmail above.
+// Requires in account/urls.py:
+//     path('password-reset/request/', password_reset_request, ...),
+//     path('password-reset/confirm/', password_reset_confirm, ...),
+// ==========================================================
+export async function requestPasswordReset(email) {
+  const res = await axios.post(`${API_URL}account/password-reset/request/`, {
+    email,
+  });
+  return res.data;
+}
+
+// Checks the 6-digit code before the new password is asked for (does
+// not use the code up). Endpoint: POST account/password-reset/verify/
+export async function verifyPasswordResetCode(email, code) {
+  const res = await axios.post(`${API_URL}account/password-reset/verify/`, {
+    email,
+    code,
+  });
+  return res.data;
+}
+
+export async function confirmPasswordReset(email, code, newPassword) {
+  const res = await axios.post(`${API_URL}account/password-reset/confirm/`, {
+    email,
+    code,
+    new_password: newPassword,
+  });
+  return res.data;
+}
+
 // =====================
 // GAMIFICATION
 // =====================
@@ -426,13 +559,8 @@ export const getPointsTracking = async () => {
   return res.data;
 };
 
-// Creates a new points-tracking record — e.g. +8 pts when a found item is
-// surrendered. Posts to the same endpoint getPointsTracking() reads from,
-// matching the list/create convention already used by claim/schedules/ and
-// account/users/ above (same URL handles GET-list and POST-create). The
-// `id_number` field is the unique identifier tying the record back to the
-// student who should be credited — LeaderboardControl.jsx and its
-// reasonLabel() already expect a `SURRENDER_ITEM` reason value here.
+// Creates a new points-tracking record (e.g. +8 pts when a found item is
+// surrendered). `student_id` ties the record back to the student credited.
 export const addPointsRecord = async (data) => {
   const res = await api.post("gamification/points-tracking/", data);
   return res.data;
@@ -457,16 +585,81 @@ export const updateLeaderboardSettings = async (data) => {
   return res.data;
 };
 
-// Uses the shared `api` instance (not raw axios) so this goes through the
-// same JWT interceptor as every other call here, and uses a relative path
-// instead of manually prefixing API_URL. API_URL already ends in a slash
-// ("http://localhost:8000/"), so the old `${API_URL}/claim/check/...`
-// template produced a double slash ("http://localhost:8000//claim/check/..."),
-// which some Django URL configs will fail to route (silent 404) instead of
-// hitting the intended endpoint.
+// Uses the shared `api` instance and a relative path (API_URL already ends
+// in a slash, so no manual prefix).
 export const checkClaimStatus = async (itemId, email) => {
   const res = await api.get(`claim/check/${itemId}/`, {
     params: { email },
   });
   return res.data;
+};
+
+// Claims made by the currently logged-in user.
+export const getMyClaims = async () => {
+  const res = await api.get("claim/my-claims/");
+  return res.data;
+};
+
+// RE-CLAIM after a missed meeting ("Session Timed Out"). Only a new
+// date/time is sent; the original answers are reused by the backend.
+// Endpoint: POST claim/reclaim/<id>/ (reclaim_claim in claim/views.py).
+export const reclaimClaim = async (id, data) => {
+  const res = await api.post(`claim/reclaim/${id}/`, data);
+  return res.data;
+};
+
+// ==========================================================
+// REPORT ISSUES
+//
+// Users submit issues from the mobile app; admins review them on the
+// Utilities > Report Issues page (ReportIssues.jsx).
+//
+// These are the "support" app's endpoints (IssueReport model), the same
+// ones the mobile app submits to. The page used to read "report-issue/",
+// a different app and table the mobile app never writes to, so reports
+// that were in the database never showed up.
+//
+// support/urls.py, mounted at "support/" in backend/urls.py:
+//   POST          support/issues/submit/  -> submit_issue_report (any user)
+//   GET           support/issues/mine/    -> my_issue_reports    (own only)
+//   GET           support/issues/         -> list_issue_reports  (admin only)
+//   GET/PUT/PATCH support/issues/<id>/    -> issue_report_detail (admin only)
+//
+// Status values: "open" / "in_review" / "resolved". Only the status can be
+// changed. There is no delete endpoint.
+// ==========================================================
+
+// Same endpoint the mobile app uses: { subject, category, description }.
+// category: bug | account | item_post | claim | suggestion | other
+export const createReportIssue = async (data) => {
+  const res = await api.post("support/issues/submit/", data);
+  return res.data;
+};
+
+// Every report (admin only). Optional filters: { status, category }.
+export const getReportIssues = async (params = {}) => {
+  const res = await api.get("support/issues/", { params });
+  return res.data;
+};
+
+// data: { status: "open" | "in_review" | "resolved" }
+export const updateReportIssue = async (id, data) => {
+  const res = await api.patch(`support/issues/${id}/`, data);
+
+  logActivity({
+    actor_name: 'Admin',
+    actor_role: 'Admin',
+    action: 'updated',
+    target_title: res.data?.subject || `Report Issue #${id}`,
+    details: `Updated reported issue status to ${res.data?.status_label || data.status || 'N/A'}`,
+  });
+
+  return res.data;
+};
+
+// The support app has no delete endpoint, so this always fails with a
+// clear message instead of calling a URL that does not exist. Kept so any
+// page that still imports it doesn't break.
+export const deleteReportIssue = async () => {
+  throw new Error("Deleting reported issues is not supported.");
 };

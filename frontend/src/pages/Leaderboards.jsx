@@ -7,30 +7,52 @@ import {
   FaTrophy,
   FaBoxOpen,
   FaHandHolding,
+  FaSearch,
 } from "react-icons/fa";
 
-const getSchoolYearAndSemFromDate = (dateString) => {
+// Same month ranges as Leaderboard Control (0 = January ... 11 = December).
+// Only used as a fallback: the backend sends the exact semester it is
+// counting points for (`period`), so both pages always agree.
+const DEFAULT_SEMESTER_CONFIG = {
+  firstSem: { startMonth: 7, endMonth: 11 }, // Aug - Dec
+  secondSem: { startMonth: 0, endMonth: 4 }, // Jan - May
+  shortTerm: { startMonth: 5, endMonth: 6 }, // Jun - Jul
+};
+
+const getSchoolYearAndSemFromDate = (dateString, semConfig) => {
   const referenceDate = dateString ? new Date(dateString) : new Date();
   const finalDate = isNaN(referenceDate.getTime()) ? new Date() : referenceDate;
 
   const year = finalDate.getFullYear();
   const month = finalDate.getMonth();
+  const cfg = { ...DEFAULT_SEMESTER_CONFIG, ...(semConfig || {}) };
+  const inRange = (m, term) => {
+    const start = Number(term?.startMonth);
+    const end = Number(term?.endMonth);
+    if (Number.isNaN(start) || Number.isNaN(end)) return false;
+    return start <= end ? m >= start && m <= end : m >= start || m <= end;
+  };
 
-  let sem = "";
-  let schoolYear = "";
-
-  if (month >= 7 && month <= 11) {
-    sem = "1st Semester";
-    schoolYear = `${year}-${year + 1}`;
-  } else if (month >= 0 && month <= 4) {
-    sem = "2nd Semester";
-    schoolYear = `${year - 1}-${year}`;
-  } else {
-    sem = "Short Term";
-    schoolYear = `${year}`;
+  if (inRange(month, cfg.firstSem)) {
+    const startYear = month >= Number(cfg.firstSem.startMonth) ? year : year - 1;
+    return { schoolYear: `${startYear}-${startYear + 1}`, sem: "1st Semester" };
   }
+  if (inRange(month, cfg.secondSem)) {
+    const endYear = month <= Number(cfg.secondSem.endMonth) ? year : year + 1;
+    return { schoolYear: `${endYear - 1}-${endYear}`, sem: "2nd Semester" };
+  }
+  if (inRange(month, cfg.shortTerm)) {
+    return { schoolYear: `${year}`, sem: "Short Term" };
+  }
+  return { schoolYear: `${year}`, sem: "Custom Term" };
+};
 
-  return { schoolYear, sem };
+// "2026-08-01" -> "Aug 1, 2026"
+const prettyDay = (iso) => {
+  const d = new Date(`${iso}T00:00:00`);
+  return isNaN(d.getTime())
+    ? iso
+    : d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 };
 
 // Podium accent styling per rank, kept inside the site's navy/blue palette
@@ -122,7 +144,7 @@ function ScoringInfoPopover() {
             </li>
             <li className="flex items-start gap-2">
               <span className="mt-0.5">🏆</span>
-              <span>Your total points determine your rank on the leaderboard.</span>
+              <span>Only points earned during the current semester count, so the ranking starts fresh each semester.</span>
             </li>
             <li className="flex items-start gap-2">
               <span className="mt-0.5">📊</span>
@@ -152,7 +174,12 @@ function Leaderboard() {
   const [loading, setLoading] = useState(true);
   const [leaderboardActive, setLeaderboardActive] = useState(true);
 
-  const [config, setConfig] = useState({ auto_mode: false, open_date: "" });
+  const [config, setConfig] = useState({ auto_mode: false, open_date: "", semConfig: null });
+  // The semester the backend is counting points for:
+  // { semester, school_year, start, end }.
+  const [period, setPeriod] = useState(null);
+  // Search by name or ID number.
+  const [search, setSearch] = useState("");
 
   useEffect(() => {
     fetchInitialData();
@@ -169,7 +196,9 @@ function Leaderboard() {
         setConfig({
           auto_mode: Boolean(settingsData.auto_mode),
           open_date: settingsData.open_date || "",
+          semConfig: settingsData.semConfig || null,
         });
+        if (settingsData.period) setPeriod(settingsData.period);
       }
     } catch (e) {
       console.error("Failed to load configs:", e);
@@ -187,6 +216,7 @@ function Leaderboard() {
       } else {
         setLeaderboardActive(Boolean(data.active));
         setLeaders(Array.isArray(data.leaders) ? data.leaders : []);
+        if (data.period) setPeriod(data.period);
       }
     } catch (error) {
       console.error("Failed to fetch leaderboard:", error);
@@ -199,9 +229,15 @@ function Leaderboard() {
   const topLeaders = safeLeaders.slice(0, 3);
   const otherLeaders = safeLeaders.slice(3);
 
-  const { schoolYear, sem } = getSchoolYearAndSemFromDate(
-    config.auto_mode ? config.open_date : null
+  // Title follows the semester months set in Leaderboard Control.
+  const fallback = getSchoolYearAndSemFromDate(
+    config.auto_mode ? config.open_date : null,
+    config.semConfig
   );
+  const schoolYear = period?.school_year || fallback.schoolYear;
+  const sem = period?.semester || fallback.sem;
+  const periodRange =
+    period?.start && period?.end ? `${prettyDay(period.start)} – ${prettyDay(period.end)}` : "";
 
   // Digits-only comparison so "12345678", "12345678@slc-sflu.edu.ph", and
   // any other formatting of the same student ID all match each other.
@@ -233,6 +269,68 @@ function Leaderboard() {
     );
   };
 
+  // One row in "Other Rankings" (also used for search results).
+  const renderRankRow = (leader, rank) => {
+    const mine = isMe(leader);
+    return (
+        <div
+          key={leader.id}
+          className={`flex items-center gap-3 rounded-xl border px-4 py-2.5 transition sm:gap-4 ${
+            mine
+              ? "border-[#0B6FA4] bg-[#EAF6FC] ring-1 ring-[#0B6FA4]/30"
+              : "border-slate-200 bg-[#F8FAFC] hover:border-[#0B6FA4]/40 hover:bg-white"
+          }`}
+        >
+          <span
+            className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-black ${
+              mine
+                ? "bg-[#0B6FA4] text-white"
+                : "bg-slate-200 text-slate-600"
+            }`}
+          >
+            {rank}
+          </span>
+
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="truncate text-sm font-bold text-slate-800">
+                {leader.full_name}
+              </p>
+              {mine && (
+                <span className="shrink-0 rounded-full bg-[#0B6FA4] px-2 py-0.5 text-[9px] font-black uppercase tracking-wide text-white">
+                  You
+                </span>
+              )}
+            </div>
+            <p className="truncate text-[11px] text-slate-400">
+              ID: {normalizeId(leader.id_number || leader.student_id) || "—"}
+            </p>
+          </div>
+
+          <div className="flex shrink-0 items-center gap-1.5 text-sm font-black text-[#0B6FA4]">
+            <FaHandHolding className="hidden text-slate-300 sm:block" size={11} />
+            {leader.points}
+            <span className="text-[10px] font-bold uppercase text-slate-400">
+              pts
+            </span>
+          </div>
+        </div>
+    );
+  };
+
+  // Search results keep each person's real rank.
+  const searchTerm = search.trim().toLowerCase();
+  const searchDigits = searchTerm.replace(/\D/g, "");
+  const searchResults = searchTerm
+    ? safeLeaders
+        .map((leader, index) => ({ leader, rank: index + 1 }))
+        .filter(({ leader }) =>
+          String(leader.full_name || "").toLowerCase().includes(searchTerm) ||
+          (searchDigits.length > 0 &&
+            normalizeId(leader.id_number || leader.student_id).includes(searchDigits))
+        )
+    : [];
+
   // Podium is rendered in visual order 2nd, 1st, 3rd (1st in the middle,
   // tallest bar), but each cell still needs to know its real rank.
   const podiumOrder = [
@@ -249,7 +347,8 @@ function Leaderboard() {
             Honest Finders Leaderboard for SY {schoolYear} ({sem})
           </h2>
           <p className="mt-2 text-sm text-slate-500">
-            Ranked by earned surrender and claim points
+            Ranked by surrender and claim points earned this semester
+            {periodRange && <span className="font-semibold text-slate-600"> ({periodRange})</span>}
           </p>
         </div>
         <div className="mt-1 sm:mt-1.5">
@@ -271,6 +370,53 @@ function Leaderboard() {
           </p>
         </div>
       ) : (
+        <>
+        <div className="mx-auto mb-6 max-w-xl">
+          <div className="relative">
+            <FaSearch className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={13} />
+            <input
+              type="search"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search by name or ID number..."
+              aria-label="Search the leaderboard"
+              className="w-full rounded-full border border-slate-300 bg-white py-2.5 pl-10 pr-10 text-sm text-slate-800 shadow-sm outline-none placeholder:text-slate-400 focus:border-[#0B6FA4] focus:ring-2 focus:ring-[#0B6FA4]/15"
+            />
+            {search && (
+              <button
+                type="button"
+                onClick={() => setSearch("")}
+                aria-label="Clear search"
+                className="absolute right-3 top-1/2 -translate-y-1/2 rounded-full p-1 text-slate-400 hover:text-slate-700"
+              >
+                <FaTimes size={12} />
+              </button>
+            )}
+          </div>
+        </div>
+
+        {searchTerm ? (
+          <section className="mx-auto max-w-3xl">
+            <div className="mb-4 flex items-center justify-center gap-2">
+              <h3 className="flex items-center gap-2 text-sm font-black uppercase tracking-widest text-[#163B65]">
+                <FaSearch className="text-[#0B6FA4]" size={12} />
+                Search Results
+              </h3>
+              <span className="w-fit rounded-full bg-[#EAF6FC] px-3 py-1 text-xs font-bold text-[#0B6FA4]">
+                {searchResults.length} found
+              </span>
+            </div>
+            {searchResults.length === 0 ? (
+              <div className="px-4 py-10 text-center text-sm text-slate-400">
+                No one on the leaderboard matches "{search.trim()}".
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {searchResults.map(({ leader, rank }) => renderRankRow(leader, rank))}
+              </div>
+            )}
+          </section>
+        ) : (
         <div className="grid gap-8 lg:grid-cols-5 lg:items-start">
           {/* LEFT — TOP 3 PODIUM (1st in the middle, tallest bar) */}
           <section className="lg:col-span-2">
@@ -309,6 +455,9 @@ function Leaderboard() {
                       </div>
                       <p className="mt-2 line-clamp-2 break-words text-[10px] font-black leading-tight text-slate-900 sm:mt-3 sm:text-sm">
                         {leader.full_name}
+                      </p>
+                      <p className="mt-0.5 truncate text-[9px] font-semibold text-slate-400 sm:text-[11px]">
+                        ID: {normalizeId(leader.id_number || leader.student_id) || "—"}
                       </p>
                       {mine && (
                         <span className="mt-1 inline-block rounded-full bg-[#0B6FA4] px-2 py-0.5 text-[8px] font-black uppercase tracking-wide text-white sm:text-[9px]">
@@ -349,61 +498,13 @@ function Leaderboard() {
               </div>
             ) : (
               <div className="space-y-2">
-                {otherLeaders.map((leader, index) => {
-                  const rank = index + 4;
-                  const mine = isMe(leader);
-
-                  return (
-                    <div
-                      key={leader.id}
-                      className={`flex items-center gap-3 rounded-xl border px-4 py-2.5 transition sm:gap-4 ${
-                        mine
-                          ? "border-[#0B6FA4] bg-[#EAF6FC] ring-1 ring-[#0B6FA4]/30"
-                          : "border-slate-200 bg-[#F8FAFC] hover:border-[#0B6FA4]/40 hover:bg-white"
-                      }`}
-                    >
-                      <span
-                        className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-black ${
-                          mine
-                            ? "bg-[#0B6FA4] text-white"
-                            : "bg-slate-200 text-slate-600"
-                        }`}
-                      >
-                        {rank}
-                      </span>
-
-                      <div className="min-w-0 flex-1">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <p className="truncate text-sm font-bold text-slate-800">
-                            {leader.full_name}
-                          </p>
-                          {mine && (
-                            <span className="shrink-0 rounded-full bg-[#0B6FA4] px-2 py-0.5 text-[9px] font-black uppercase tracking-wide text-white">
-                              You
-                            </span>
-                          )}
-                        </div>
-                        {leader.student_id && (
-                          <p className="truncate text-[11px] text-slate-400">
-                            ID: {leader.student_id}
-                          </p>
-                        )}
-                      </div>
-
-                      <div className="flex shrink-0 items-center gap-1.5 text-sm font-black text-[#0B6FA4]">
-                        <FaHandHolding className="hidden text-slate-300 sm:block" size={11} />
-                        {leader.points}
-                        <span className="text-[10px] font-bold uppercase text-slate-400">
-                          pts
-                        </span>
-                      </div>
-                    </div>
-                  );
-                })}
+                {otherLeaders.map((leader, index) => renderRankRow(leader, index + 4))}
               </div>
             )}
           </section>
         </div>
+        )}
+        </>
       )}
     </div>
   );

@@ -8,10 +8,15 @@ import Leaderboard from "./pages/Leaderboards";
 import RequireRole from "./components/RequireRole";
 import 'leaflet/dist/leaflet.css';
 import HelpPage from "./pages/HelpPage";
+import ConfirmHost from "./components/ConfirmDialog";
+import StaffSessionGuard from "./components/StaffSessionGuard";
 export default function App() {
   return (
     <AppProvider>
+      <ConfirmHost />
       <Router>
+        {/* 5-minute inactivity logout for admin/moderator dashboard */}
+        <StaffSessionGuard />
         <Routes>
 
           {/* PUBLIC PAGES */}

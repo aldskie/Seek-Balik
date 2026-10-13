@@ -10,6 +10,9 @@ const Header = ({
   showLogin = false,
   rightContent,
   onLogoClick,
+  // Extra controls beside the clock on the dashboard (e.g. the
+  // notification bell).
+  actions,
 }) => {
   return (
     <header className="w-full bg-[#005F86] border-b border-white/10 px-4 sm:px-5 lg:px-6 py-2 sm:py-3 flex flex-col md:flex-row md:justify-between md:items-center gap-4">
@@ -47,14 +50,18 @@ const Header = ({
   </div>
 
   {variant === "dashboard" ? (
-    <div className="flex md:flex-col items-start md:items-end justify-between md:justify-center text-white md:mr-8 border-t border-white/15 md:border-t-0 pt-3 md:pt-0 w-full md:w-auto">
-      <p className="text-lg sm:text-xl lg:text-2xl font-bold font-mono">
-        {time}
-      </p>
+    <div className="flex items-center justify-between md:justify-end gap-4 md:mr-8 border-t border-white/15 md:border-t-0 pt-3 md:pt-0 w-full md:w-auto">
+      <div className="flex md:flex-col items-baseline md:items-end gap-3 md:gap-0 text-white">
+        <p className="text-lg sm:text-xl lg:text-2xl font-bold font-mono">
+          {time}
+        </p>
 
-      <p className="text-xs uppercase opacity-70">
-        {date}
-      </p>
+        <p className="text-xs uppercase opacity-70">
+          {date}
+        </p>
+      </div>
+
+      {actions}
     </div>
   ) : (
     <div className="w-full md:w-auto flex justify-start md:justify-end border-t border-white/15 md:border-t-0 pt-3 md:pt-0">
@@ -62,9 +69,28 @@ const Header = ({
 
       {!rightContent && showLogin && (
         <button
+          type="button"
           onClick={onOpenLogin}
-          className="w-full sm:w-auto px-6 py-2 full border border-white/40 bg-white/10 hover:bg-white/20 text-white transition"
+          title="Log in to your account"
+          // Rounded pill with clear clickable feedback: pointer cursor,
+          // lift + glow on hover, press-down on click, focus ring.
+          className="group inline-flex w-full sm:w-auto cursor-pointer items-center justify-center gap-2 rounded-full border border-white/50 bg-white px-6 py-2.5 text-sm font-bold uppercase tracking-wide text-[#005F86] shadow-md transition-all duration-200 hover:-translate-y-0.5 hover:bg-[#EAF6FB] hover:shadow-lg active:translate-y-0 active:scale-95 focus:outline-none focus-visible:ring-4 focus-visible:ring-white/50"
         >
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className="h-4 w-4 transition-transform duration-200 group-hover:translate-x-0.5"
+            aria-hidden="true"
+          >
+            <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" />
+            <polyline points="10 17 15 12 10 7" />
+            <line x1="15" y1="12" x2="3" y2="12" />
+          </svg>
           Login
         </button>
       )}

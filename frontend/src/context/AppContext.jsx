@@ -36,11 +36,19 @@ export const AppProvider = ({ children }) => {
       if (token) {
         try {
           const user = await getCurrentUser();
+          // Still on the emailed temporary password: not a real session
+          // yet. Log out so they must log in and change it first.
+          if (user?.must_change_password) {
+            logout();
+            setAuthLoading(false);
+            return;
+          }
           setCurrentUser(user);
           setIsLoggedIn(true);
           setUserRole(user.role || '');
           localStorage.setItem('isLoggedIn', 'true');
           if (user.role) localStorage.setItem('userRole', user.role);
+          localStorage.setItem('userName', `${user.first_name || ''} ${user.last_name || ''}`.trim());
         } catch (err) {
           console.error("Session verification failed:", err);
           logout();
@@ -60,12 +68,18 @@ export const AppProvider = ({ children }) => {
       setCurrentUser(userOrRole);
       setUserRole(userOrRole.role || '');
       localStorage.setItem('userRole', userOrRole.role || '');
+      localStorage.setItem(
+        'userName',
+        `${userOrRole.first_name || ''} ${userOrRole.last_name || ''}`.trim()
+      );
     } else {
       setUserRole(userOrRole);
       localStorage.setItem('userRole', userOrRole);
     }
 
     localStorage.setItem('isLoggedIn', 'true');
+    // Start the 5-minute inactivity clock (see PublicLanding.jsx).
+    localStorage.setItem('lastActivityAt', String(Date.now()));
   };
 
   // Complete session reset
@@ -75,8 +89,10 @@ export const AppProvider = ({ children }) => {
     setCurrentUser(null);
     localStorage.removeItem('isLoggedIn');
     localStorage.removeItem('userRole');
+    localStorage.removeItem('userName');
     localStorage.removeItem('accessToken');
     localStorage.removeItem('refreshToken');
+    localStorage.removeItem('lastActivityAt');
   };
 
   // =====================

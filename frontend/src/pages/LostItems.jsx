@@ -1,13 +1,15 @@
 import React, { useEffect, useState, useRef } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { Eye, Pencil, Archive, Trash2, CheckCircle, AlertCircle, X } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { getItems, getItemById, API_URL, editLostItem, createLostItem, deleteLostItem } from "../api/api";
 import PhotoUpload from '../components/PhotoUpload';
-import { logActivity } from '../utils/activityLog';
+import { logActivity } from '../utils/Activitylog';
+import Pagination from "../components/Pagination";
+import { showToast } from "../utils/toast";
 
 const AREAS = [
   'Grandstand',
-  'Criminology Building',
   'Verbist Building',
   'Chapel',
   'Administrative Building (Main Building)',
@@ -21,54 +23,74 @@ const AREAS = [
   'Conrado Dela Cruz Sports Center (CDC)',
   'Senior High School Department Building',
   'HM Laboratory Building',
+  'Student Affairs Office Lobby',
   'Others'
 ];
-const CATS = ['Personal', 'Accessories', 'Id', 'Electronics', 'Keys', 'Valuables'];
+
+// ─── Categories ─────────────────────────────────────────────────────────────
+// Kept identical to FoundItems.jsx so a lost report and a surrendered item
+// describing the same thing land in the same category. Reports saved under
+// a retired category keep their stored value — see the LEGACY note on the
+// Category <select> below.
+const CATS = ['Accessories', 'ID', 'Academic Materials', 'Bags & Wallets', 'Clothing', 'Electronic', 'Keys'];
+
 // 'Declined' included so it can be reflected/reset from the Edit modal too.
 const STATUSES = ['Pending', 'Approved', 'Declined', 'Claimed'];
+
+// Reason saved (and shown on ticket look-up) when staff decline a lost
+// report. Staff no longer type one in.
+const DEFAULT_DECLINE_REMARKS =
+  'Your report could not be approved. Please visit the Student Affairs Office for more details.';
 const MAX_IMAGES = 3;
 // Maximum number of areas that can be selected in the "Area Lost" multi-select.
 const MAX_LOCATIONS = 5;
 
 // ─── Item Name presets ──────────────────────────────────────────────────────
-// Predefined Item Name choices per Category, used to drive the Item Name
-// dropdown once a Category is selected — same pattern as the Found Items
-// admin page. Keys must match the CATS values above exactly. "Other (please
-// specify)" is always appended in the UI so staff/users can still type
-// something not on the list.
+// Copied verbatim from FoundItems.jsx so both pages offer the same
+// vocabulary. Keys must match the CATS values above exactly.
 const ITEM_NAME_OPTIONS = {
-  'Personal': [
-    'Umbrella', 'Water Bottle', 'Tumbler', 'Lunch Box', 'Notebook', 'Book',
-    'Wallet', 'Bag', 'Eyeglasses', 'Sunglasses', 'Cap/Hat', 'ID Lace', 'Towel'
-  ],
   'Accessories': [
     'Watch', 'Bracelet', 'Necklace', 'Ring', 'Earrings', 'Hair Clip', 'Hair Tie',
     'Sunglasses', 'Eyeglasses', 'Cap/Hat', 'Keychain', 'ID Lace', 'Brooch/Pin', 'Belt'
   ],
-  'Id': [
-    'Student ID', 'School ID', "Driver's License", 'Passport', 'Government ID',
+  'ID': [
+    'Student ID', "Driver's License", 'Passport', 'Government ID',
     'Company/Employee ID', 'PhilHealth ID', 'UMID', 'ATM/Debit Card', 'Library Card',
     'Other Identification Card'
   ],
-  'Electronics': [
+  'Academic Materials': [
+    'Notebook', 'Binder', 'Folder', 'Envelope', 'Textbook', 'Reference Book', 'Module',
+    'Reviewer', 'Printed Document', 'Assignment', 'Examination Paper', 'Index Card',
+    'Yellow Pad', 'Calculator', 'Ruler', 'Pencil', 'Ballpen', 'Marker/Highlighter',
+    'Eraser', 'Pencil Case', 'Art Materials', 'USB/Flash Drive'
+  ],
+  'Bags & Wallets': [
+    'Backpack', 'School Bag', 'Shoulder Bag', 'Tote Bag', 'Sling Bag', 'Laptop Bag',
+    'Handbag', 'Purse', 'Wallet', 'Coin Purse', 'Pouch', 'Pencil Case', 'Drawstring Bag',
+    'Travel Bag'
+  ],
+  'Clothing': [
+    'T-Shirt', 'Polo Shirt', 'Uniform', 'Jacket', 'Hoodie', 'Sweater', 'Pants', 'Jeans',
+    'Shorts', 'Skirt', 'Dress', 'Socks', 'Shoes', 'Slippers', 'Sneakers', 'Underwear',
+    'Scarf', 'Gloves', 'Raincoat'
+  ],
+  'Electronic': [
     'Mobile Phone', 'Laptop', 'Tablet', 'iPad', 'Smartwatch', 'Digital Camera',
     'Calculator', 'Power Bank', 'Charger', 'Charging Cable', 'Earphones', 'Earbuds',
     'Headphones', 'Bluetooth Speaker', 'USB Flash Drive', 'External Hard Drive', 'Mouse',
-    'Keyboard', 'Adapter'
+    'Keyboard', 'Adapter', 'Power Supply', 'HDMI Cable'
   ],
   'Keys': [
     'House Key', 'Room Key', 'Classroom Key', 'Office Key', 'Cabinet Key', 'Locker Key',
     'Padlock Key', 'Motorcycle Key', 'Car Key', 'Key Set', 'Duplicate Key',
     'Keychain with Keys'
-  ],
-  'Valuables': [
-    'Cash', 'Jewelry', 'Watch', 'Ring', 'Necklace', 'Bracelet', 'Earrings',
-    'Wallet', 'Important Documents', 'Gadget', 'Passbook'
   ]
 };
 
-// Marker value used by the Item Name <select> to represent "the user wants
-// to type a custom name that isn't on the predefined list for this Category".
+// The category a brand-new report starts on — first entry of CATS.
+const DEFAULT_CATEGORY = CATS[0];
+
+// Marker value used by the Item Name <select> for a custom name.
 const OTHER_ITEM_NAME = '__other__';
 
 /** True when `title` is non-empty and not one of the predefined choices for
@@ -79,6 +101,11 @@ function isCustomItemName(title, category) {
   return !options.includes(title);
 }
 
+// School email domain. Shown next to the Student ID input for reference
+// only — the Student ID itself is saved as the bare 8 digits (the backend
+// also strips this suffix if it's ever sent).
+const ID_NUMBER_DOMAIN = '@slc-sflu.edu.ph';
+
 const statusColor = (s) =>
   s === 'Claimed' ? 'bg-purple-100 text-purple-500' :
   s === 'Pending' ? 'bg-orange-100 text-orange-500' :
@@ -87,7 +114,8 @@ const statusColor = (s) =>
 
 const EMPTY = {
   title: '',
-  category: 'Personal',
+  category: DEFAULT_CATEGORY,
+  student_id: '',
   poster_first_name: '',
   poster_last_name: '',
   location: [],
@@ -98,8 +126,7 @@ const EMPTY = {
   description: '',
   status: 'Pending',
   // Reason staff gave when declining a report. Only meaningful once
-  // status === 'Declined', but kept on the form at all times so it
-  // round-trips cleanly through edit/save.
+  // status === 'Declined'.
   declined_remarks: '',
   image: []
 };
@@ -114,11 +141,8 @@ function toTitleCase(text) {
 }
 
 // ─── Reported-by name helpers ───────────────────────────────────────────────
-// "Reported By" is still stored on the backend as a single `poster_name`
-// field, but the form works with separate First Name / Last Name inputs.
-// This converts between the two, splitting on the first whitespace when
-// only a combined name is available (e.g. an item saved before this split
-// existed, or one coming straight from the backend).
+// "Reported By" is stored on the backend as a single `poster_name` field,
+// but the form works with separate First Name / Last Name inputs.
 function parsePosterName(source) {
   if (!source) return { first: '', last: '' };
   if (source.poster_first_name || source.poster_last_name) {
@@ -133,10 +157,18 @@ function parsePosterName(source) {
   return { first: parts[0] || '', last: parts.slice(1).join(' ') };
 }
 
+// ─── Student ID helpers ─────────────────────────────────────────────────────
+// The Student ID input only ever collects the 8 digits. When loading an
+// existing report, strip any non-digit characters (including a legacy
+// appended domain) back down to just the digits.
+function parseIdNumberDigits(source) {
+  const raw = source?.student_id || '';
+  return String(raw).replace(/\D/g, '').slice(0, 8);
+}
+
 // ─── Image helpers ─────────────────────────────────────────────────────────
-// Resolves EVERY photo attached to an item (not just the first one). Prefers
-// the backend's nested `images` list (one row per uploaded photo), and falls
-// back to a legacy single `image`/`file` field for older records.
+// Resolves EVERY photo attached to an item. Prefers the backend's nested
+// `images` list, and falls back to a legacy single `image`/`file` field.
 function resolveImageUrl(path) {
   if (!path) return null;
   return path.startsWith('http') ? path : `${API_URL.replace(/\/$/, '')}/${path.replace(/^\//, '')}`;
@@ -160,14 +192,10 @@ function getImageUrls(item) {
 }
 
 // ─── Location helpers ──────────────────────────────────────────────────────
-// The item's "location" is stored on the backend as a single text field, so
-// multiple selected areas are joined into one comma-separated string (e.g.
-// "Library, Chapel, Gymnasium"). These helpers convert between that stored
-// string and the array the multi-select UI works with.
+// Multiple selected areas are joined into one comma-separated string.
 
 /** Turn a stored location value (string or array) into a working array of
- * selected AREAS values (using "Others" as the marker for custom entries),
- * plus the free-text for any custom ("Others") entries. */
+ * selected AREAS values plus the free-text for any custom entries. */
 function parseStoredLocation(rawLocation, storedOtherText) {
   let list = [];
   if (Array.isArray(rawLocation)) {
@@ -209,16 +237,16 @@ const ItemModal = ({ item, onSave, onClose }) => {
   const [saving, setSaving] = useState(false);
   const [locationOpen, setLocationOpen] = useState(false);
   const locationRef = useRef(null);
+  // Confirmation step shown right before the report is actually submitted.
+  const [confirmOpen, setConfirmOpen] = useState(false);
 
   const normalizeForm = (source) => {
     const base = source || EMPTY;
     const { selected, otherText } = parseStoredLocation(base.location, base.other_location);
     const { first, last } = parsePosterName(base);
+    const idDigits = parseIdNumberDigits(base);
 
-    // Pre-populate the photo picker with any existing photo URLs so editing
-    // an item shows its current photos (as strings) alongside room for new
-    // File objects the user adds. PhotoUpload already supports mixed arrays
-    // of File objects and existing URL strings.
+    // Pre-populate the photo picker with any existing photo URLs.
     const existingImageUrls = source ? getImageUrls(source) : [];
 
     return {
@@ -227,6 +255,7 @@ const ItemModal = ({ item, onSave, onClose }) => {
       other_location: otherText,
       poster_first_name: first,
       poster_last_name: last,
+      student_id: idDigits,
       image: existingImageUrls,
       created_date_to: base.created_date_to || '',
       created_time_to: base.created_time_to || '',
@@ -237,9 +266,7 @@ const ItemModal = ({ item, onSave, onClose }) => {
   const [form, setForm] = useState(normalizeForm(item));
   const isEdit = !!item;
 
-  // Whether the Item Name field is currently in "custom text" mode (staff
-  // picked "Other (please specify)", or the item's saved title isn't one of
-  // the predefined choices for its Category — e.g. legacy data).
+  // Whether the Item Name field is currently in "custom text" mode.
   const [itemNameOther, setItemNameOther] = useState(() =>
     isCustomItemName(normalizeForm(item).title, normalizeForm(item).category)
   );
@@ -251,10 +278,8 @@ const ItemModal = ({ item, onSave, onClose }) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [item]);
 
-  // Changing Category swaps the predefined Item Name list, so the
-  // previously selected/typed name almost never still applies. Reset the
-  // Item Name back to "choose one" mode whenever Category changes, unless
-  // the current title happens to also exist in the new category's list.
+  // Changing Category swaps the predefined Item Name list. Reset the Item
+  // Name unless the current title also exists in the new category's list.
   const setCategory = (newCategory) => {
     setForm((prev) => {
       const stillValid = (ITEM_NAME_OPTIONS[newCategory] || []).includes(prev.title);
@@ -285,16 +310,20 @@ const ItemModal = ({ item, onSave, onClose }) => {
     }));
   };
 
-  // Toggle a single area on/off in the multi-select. Unchecking "Others"
-  // also clears the free-text field for custom locations. Selection is
-  // capped at MAX_LOCATIONS — attempting to add beyond that is a no-op.
+  // Only digits are ever accepted for the Student ID field, capped at 8.
+  // Only invoked from the Add-mode input (read-only in Edit mode).
+  const setIdNumber = (value) => {
+    const digitsOnly = (value || '').replace(/\D/g, '').slice(0, 8);
+    set('student_id', digitsOnly);
+  };
+
+  // Toggle a single area on/off in the multi-select, capped at MAX_LOCATIONS.
   const toggleLocation = (area) => {
     setForm((prev) => {
       const current = Array.isArray(prev.location) ? prev.location : [];
       const exists = current.includes(area);
 
       if (!exists && current.length >= MAX_LOCATIONS) {
-        // Already at the cap — ignore attempts to select another area.
         return prev;
       }
 
@@ -307,14 +336,13 @@ const ItemModal = ({ item, onSave, onClose }) => {
     });
   };
 
-  // Changing the Status away from "Declined" clears any previously entered
-  // decline reason so a stale remark doesn't silently linger on a
-  // re-approved / re-opened report.
+  // Changing the Status away from "Declined" clears any decline reason.
   const setStatus = (newStatus) => {
     setForm((prev) => ({
       ...prev,
       status: newStatus,
-      declined_remarks: newStatus === 'Declined' ? prev.declined_remarks : '',
+      declined_remarks:
+        newStatus === 'Declined' ? prev.declined_remarks || DEFAULT_DECLINE_REMARKS : '',
     }));
   };
 
@@ -325,15 +353,15 @@ const ItemModal = ({ item, onSave, onClose }) => {
     const today = new Date().toLocaleDateString("en-CA");
 
     if (form.created_date && form.created_date > today) {
-      window.alert("Date reported cannot be in the future.");
+      showToast("Date reported cannot be in the future.");
       return;
     }
     if (form.created_date_to && form.created_date_to > today) {
-      window.alert("Date reported (To) cannot be in the future.");
+      showToast("Date reported (To) cannot be in the future.");
       return;
     }
     if (form.created_date && form.created_date_to && form.created_date_to < form.created_date) {
-      window.alert("Date Reported 'To' cannot be before 'From'.");
+      showToast("End date cannot be before the start date.");
       return;
     }
     if (
@@ -344,14 +372,19 @@ const ItemModal = ({ item, onSave, onClose }) => {
       form.created_date === form.created_date_to &&
       form.created_time_to < form.created_time
     ) {
-      window.alert("Time Reported 'To' cannot be before 'From'.");
+      showToast("End time cannot be before the start time.");
+      return;
+    }
+
+    if (!/^\d{8}$/.test(form.student_id || "")) {
+      showToast("Please enter a valid 8-digit Student ID.");
       return;
     }
 
     const hasLocation = Array.isArray(form.location) && form.location.length > 0;
 
     if (Array.isArray(form.location) && form.location.length > MAX_LOCATIONS) {
-      window.alert(`You can select up to ${MAX_LOCATIONS} areas only.`);
+      showToast(`You can select up to ${MAX_LOCATIONS} areas only.`);
       return;
     }
 
@@ -361,21 +394,27 @@ const ItemModal = ({ item, onSave, onClose }) => {
       !form.poster_last_name?.trim() ||
       !form.created_date?.trim() ||
       !hasLocation ||
-      (form.location.includes("Others") && !form.other_location?.trim()) ||
-      (form.status === "Declined" && !form.declined_remarks?.trim())
+      (form.location.includes("Others") && !form.other_location?.trim())
     ) {
       return;
     }
 
+    // All fields check out — ask for confirmation before submitting.
+    setConfirmOpen(true);
+  };
+
+  const performSave = async () => {
+    setConfirmOpen(false);
     setSaving(true);
 
     try {
       const payload = {
         ...form,
         location: serializeLocation(form.location, form.other_location),
-        // Backend still stores a single combined name; the split
-        // first/last inputs are only a form-side convenience.
+        // Backend stores a single combined name. The Student ID is sent as
+        // the bare 8 digits — same as FoundItems.jsx.
         poster_name: `${form.poster_first_name.trim()} ${form.poster_last_name.trim()}`.trim(),
+        student_id: form.student_id,
       };
 
       delete payload.other_location;
@@ -390,8 +429,8 @@ const ItemModal = ({ item, onSave, onClose }) => {
     }
   };
 
-  // PhotoUpload's value is a mixed array of existing URL strings (already
-  // saved photos) and new File objects (freshly picked, not yet uploaded).
+  // PhotoUpload's value is a mixed array of existing URL strings and new
+  // File objects.
   const handlePhotoChange = (e) => {
     const { name, value } = e.target;
     set(name, value);
@@ -405,6 +444,17 @@ const ItemModal = ({ item, onSave, onClose }) => {
   const selectedLocations = Array.isArray(form.location) ? form.location : [];
   const itemNamePresets = ITEM_NAME_OPTIONS[form.category] || [];
   const locationLimitReached = selectedLocations.length >= MAX_LOCATIONS;
+  // Only relevant in Add mode — the field is read-only when editing.
+  const idNumberInvalid = !isEdit && form.student_id && form.student_id.length !== 8;
+
+  // LEGACY CATEGORY — a report saved under a retired category keeps its
+  // value visible until someone deliberately picks a current category.
+  const legacyCategory =
+    form.category && !CATS.includes(form.category) ? form.category : null;
+
+  const confirmMessage = isEdit
+    ? "Are you sure you want to save these changes to this lost item report?"
+    : "Are you sure you want to submit this lost item report?";
 
   return (
     <div
@@ -439,20 +489,71 @@ const ItemModal = ({ item, onSave, onClose }) => {
           className="max-h-[calc(92vh-88px)] overflow-y-auto px-6 py-5"
         >
           <div className="mx-auto max-w-3xl space-y-3">
-            {/* Category is picked FIRST — the Item Name choices to its right
-                depend on it. */}
+            {/* ── Student ID — identifies the reporter. Read-only in Edit
+                   mode; only typed in when a new report is being added. */}
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div>
+                <label className={labelClass}>Student ID *</label>
+                {isEdit ? (
+                  <>
+                    <div className="flex h-11 w-full items-center rounded-xl border border-slate-300 bg-slate-100 px-4 text-sm font-semibold text-slate-600">
+                      {form.student_id || "-"}
+                    </div>
+                    <p className="mt-1 text-xs font-medium text-slate-400">
+                      This is the Student ID of the person who reported this item and can't be changed here.
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <div className="flex items-center gap-2">
+                      <input
+                        className={`${inputClass} flex-1`}
+                        value={form.student_id || ""}
+                        onChange={(e) => setIdNumber(e.target.value)}
+                        inputMode="numeric"
+                        pattern="\d*"
+                        maxLength={8}
+                        placeholder="8-digit Student ID"
+                        required
+                      />
+                      <span className="whitespace-nowrap text-sm font-semibold text-slate-500">
+                        {ID_NUMBER_DOMAIN}
+                      </span>
+                    </div>
+                    {idNumberInvalid && (
+                      <p className="mt-1 text-xs font-medium text-red-500">
+                        Student ID must be exactly 8 digits.
+                      </p>
+                    )}
+                  </>
+                )}
+              </div>
+            </div>
+
+            {/* Category is picked before Item Name. */}
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div>
                 <label className={labelClass}>Category</label>
                 <select
                   className={inputClass}
-                  value={form.category || "Personal"}
+                  value={form.category || DEFAULT_CATEGORY}
                   onChange={(e) => setCategory(e.target.value)}
                 >
+                  {legacyCategory && (
+                    <option value={legacyCategory}>
+                      {legacyCategory} (old category)
+                    </option>
+                  )}
                   {CATS.map((c) => (
                     <option key={c}>{c}</option>
                   ))}
                 </select>
+                {legacyCategory && (
+                  <p className="mt-1 text-xs font-medium text-amber-600">
+                    This report uses a category that's no longer offered. Pick a current one
+                    to re-file it.
+                  </p>
+                )}
               </div>
 
               <div>
@@ -482,7 +583,7 @@ const ItemModal = ({ item, onSave, onClose }) => {
                 {itemNameOther && (
                   <input
                     className={`${inputClass} mt-2`}
-                    value={form.title || ""}
+                    value={form.title || ""} maxLength={30}
                     onChange={(e) => set("title", e.target.value)}
                     placeholder="Please specify the item name"
                     required
@@ -567,7 +668,7 @@ const ItemModal = ({ item, onSave, onClose }) => {
                           onChange={() => toggleLocation(a)}
                           className="h-4 w-4 rounded border-slate-300 text-[#0B6B8A] focus:ring-[#0B6B8A] disabled:cursor-not-allowed"
                         />
-                        {a}
+                        {a === 'Others' ? 'Others (please specify)' : a}
                       </label>
                     );
                   })}
@@ -582,23 +683,26 @@ const ItemModal = ({ item, onSave, onClose }) => {
               )}
 
               {selectedLocations.includes("Others") && (
-                <input
-                  className={`${inputClass} mt-2`}
-                  value={form.other_location || ""}
-                  onChange={(e) => set("other_location", e.target.value)}
-                  placeholder="Please specify location(s), separated by commas"
-                  required
-                />
+                <>
+                  <p className="mt-2 mb-1 text-[11px] font-bold uppercase text-slate-500">If others, please specify *</p>
+                  <input
+                    className={inputClass}
+                    value={form.other_location || ""}
+                    onChange={(e) => set("other_location", e.target.value)}
+                    placeholder="Please specify the area(s) lost, separated by commas"
+                    required
+                  />
+                </>
               )}
             </div>
 
-            {/* Date Reported & Time Reported — now settable as a range (From / To) */}
+            {/* Date Reported & Time Reported — settable as a range (From / To) */}
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div>
                 <label className={labelClass}>Date Reported *</label>
                 <div className="grid grid-cols-2 gap-2">
                   <div>
-                    <span className={rangeLabelClass}>From</span>
+                    <span className={rangeLabelClass}>Start Date</span>
                     <input
                       className={inputClass}
                       type="date"
@@ -609,7 +713,7 @@ const ItemModal = ({ item, onSave, onClose }) => {
                     />
                   </div>
                   <div>
-                    <span className={rangeLabelClass}>To</span>
+                    <span className={rangeLabelClass}>End Date</span>
                     <input
                       className={inputClass}
                       type="date"
@@ -627,7 +731,7 @@ const ItemModal = ({ item, onSave, onClose }) => {
                   <label className={labelClass}>Time Reported</label>
                   <div className="grid grid-cols-2 gap-2">
                     <div>
-                      <span className={rangeLabelClass}>From</span>
+                      <span className={rangeLabelClass}>Start Time</span>
                       <input
                         className={inputClass}
                         type="time"
@@ -636,7 +740,7 @@ const ItemModal = ({ item, onSave, onClose }) => {
                       />
                     </div>
                     <div>
-                      <span className={rangeLabelClass}>To</span>
+                      <span className={rangeLabelClass}>End Time</span>
                       <input
                         className={inputClass}
                         type="time"
@@ -668,7 +772,7 @@ const ItemModal = ({ item, onSave, onClose }) => {
                   <label className={labelClass}>Time Reported</label>
                   <div className="grid grid-cols-2 gap-2">
                     <div>
-                      <span className={rangeLabelClass}>From</span>
+                      <span className={rangeLabelClass}>Start Time</span>
                       <input
                         className={inputClass}
                         type="time"
@@ -677,7 +781,7 @@ const ItemModal = ({ item, onSave, onClose }) => {
                       />
                     </div>
                     <div>
-                      <span className={rangeLabelClass}>To</span>
+                      <span className={rangeLabelClass}>End Time</span>
                       <input
                         className={inputClass}
                         type="time"
@@ -690,38 +794,19 @@ const ItemModal = ({ item, onSave, onClose }) => {
               </div>
             )}
 
-            {/* Declined Remarks — only relevant (and required) once Status is
-                set to "Declined". Lets staff record/edit why a report was
-                declined directly from the edit form, not just the Decline
-                confirmation prompt. */}
-            {isEdit && form.status === "Declined" && (
-              <div>
-                <label className={labelClass}>Declined Remarks *</label>
-                <textarea
-                  className="min-h-[72px] w-full resize-none rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-700 outline-none placeholder:text-slate-400 focus:border-[#1478a7]"
-                  rows={2}
-                  value={form.declined_remarks || ""}
-                  onChange={(e) => set("declined_remarks", e.target.value)}
-                  placeholder="Explain why this report was declined..."
-                  required
-                />
-              </div>
-            )}
-
             <div>
               <label className={labelClass}>Description</label>
               <textarea
                 className="min-h-[88px] w-full resize-none rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-700 outline-none placeholder:text-slate-400 focus:border-[#1478a7]"
                 rows={2}
-                value={form.description || ""}
+                value={form.description || ""} maxLength={100}
                 onChange={(e) => set("description", e.target.value)}
                 placeholder="Describe the item..."
               />
+              <p className="mt-1 text-right text-[11px] font-semibold text-slate-400">{(form.description || "").length}/100</p>
             </div>
 
-            {/* Photo upload — now available for both Add and Edit. In Edit
-                mode this is pre-populated with the item's existing photos
-                (shown as previews) plus room for new ones, up to 3 total. */}
+            {/* Photo upload — available for both Add and Edit. */}
             <PhotoUpload
               name="image"
               value={form.image}
@@ -752,6 +837,15 @@ const ItemModal = ({ item, onSave, onClose }) => {
           </div>
         </form>
       </div>
+
+      {/* Confirmation prompt shown right before the report is submitted. */}
+      {confirmOpen && (
+        <ConfirmModal
+          message={confirmMessage}
+          onConfirm={performSave}
+          onClose={() => setConfirmOpen(false)}
+        />
+      )}
     </div>
   );
 };
@@ -790,21 +884,16 @@ const ConfirmModal = ({ message, onConfirm, onClose }) => (
 );
 
 // ─── Decline Dialog ─────────────────────────────────────────────────────────
-// Like ConfirmModal, but collects a required remarks/reason before the
-// report is marked Declined. This is what keeps a declined report
-// self-explanatory later, both to staff and to the reporter checking their
-// ticket code.
+// Confirms before the report is marked Declined. No reason is typed in —
+// DEFAULT_DECLINE_REMARKS is saved automatically.
 const DeclineModal = ({ item, onConfirm, onClose }) => {
-  const [remarks, setRemarks] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
-  const trimmed = remarks.trim();
-
   const handleConfirm = async () => {
-    if (!trimmed || submitting) return;
+    if (submitting) return;
     setSubmitting(true);
     try {
-      await onConfirm(trimmed);
+      await onConfirm(DEFAULT_DECLINE_REMARKS);
     } finally {
       setSubmitting(false);
     }
@@ -819,27 +908,18 @@ const DeclineModal = ({ item, onConfirm, onClose }) => {
 
         <h5 className="mb-3 text-lg font-black text-[#144B70]">Decline Report</h5>
 
-        <p className="mx-auto mb-4 max-w-[280px] text-sm font-medium leading-6 text-[#5F6F8C]">
+        <p className="mx-auto mb-6 max-w-[280px] text-sm font-medium leading-6 text-[#5F6F8C]">
           {item?.title
-            ? `Add a reason for declining "${item.title}". This will be visible when the report is looked up by ticket code.`
-            : "Add a reason for declining this report."}
+            ? `Decline the report for "${item.title}"? The reporter will be told to visit the Student Affairs Office for details.`
+            : "Decline this report? The reporter will be told to visit the Student Affairs Office for details."}
         </p>
-
-        <textarea
-          autoFocus
-          value={remarks}
-          onChange={(e) => setRemarks(e.target.value)}
-          rows={3}
-          placeholder="e.g. Duplicate report, insufficient details, item already claimed..."
-          className="mb-6 min-h-[84px] w-full resize-none rounded-xl border border-slate-300 px-4 py-3 text-left text-sm text-slate-700 outline-none placeholder:text-slate-400 focus:border-red-400"
-        />
 
         <div className="space-y-3">
           <button
             onClick={handleConfirm}
-            disabled={!trimmed || submitting}
+            disabled={submitting}
             className={`h-12 w-full rounded-xl text-sm font-black uppercase tracking-wide text-white shadow-md transition active:scale-[0.98] ${
-              !trimmed || submitting
+              submitting
                 ? "cursor-not-allowed bg-slate-300"
                 : "bg-red-500 hover:bg-red-600"
             }`}
@@ -862,7 +942,9 @@ const DeclineModal = ({ item, onConfirm, onClose }) => {
 
 // ─── LostItems Main Page ────────────────────────────────────────────────────
 // Status tabs shown above the table. Order controls display order.
-const STATUS_FILTERS = ['Pending', 'Approved', 'Declined'];
+const STATUS_FILTERS = ['Pending', 'Approved', 'Declined', 'Claimed'];
+const inStatusTab = (status, tab) =>
+  status === tab;
 
 const LostItems = ({ currentFilter, role }) => {
   const { lostItems, addLostItem, updateLostItem } = useApp();
@@ -874,9 +956,7 @@ const LostItems = ({ currentFilter, role }) => {
   const [currentPage, setCurrentPage] = useState(1);
   const [selectedItem, setSelectedItem] = useState(null);
   const [activeConfirmation, setActiveConfirmation] = useState(null);
-  // Item currently being declined via DeclineModal (separate from
-  // activeConfirmation because this one needs a text input, not just a
-  // yes/no confirm).
+  // Item currently being declined via DeclineModal.
   const [declineTarget, setDeclineTarget] = useState(null);
   const [notificationMessage, setNotificationMessage] = useState(null);
 
@@ -913,6 +993,27 @@ const LostItems = ({ currentFilter, role }) => {
     }
   }
 
+  // Dashboard calendar "Open Item" navigates here with { reviewItemId }:
+  // open that item's Review window once the list has loaded.
+  const routerLocation = useLocation();
+  const routerNavigate = useNavigate();
+  const pendingReviewIdRef = useRef(routerLocation.state?.reviewItemId ?? null);
+  useEffect(() => {
+    if (routerLocation.state?.reviewItemId != null) {
+      pendingReviewIdRef.current = routerLocation.state.reviewItemId;
+      routerNavigate(routerLocation.pathname, { replace: true, state: null });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routerLocation.state]);
+  useEffect(() => {
+    const wanted = pendingReviewIdRef.current;
+    if (wanted == null || !Array.isArray(items) || items.length === 0) return;
+    pendingReviewIdRef.current = null;
+    const match = items.find((it) => String(it.id) === String(wanted));
+    handleView(match || { id: wanted });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [items]);
+
   async function handleView(item) {
     try {
       const response = await getItemById(item.id);
@@ -948,12 +1049,11 @@ const LostItems = ({ currentFilter, role }) => {
   }
 
   // Builds the FormData shared by add/edit: all scalar fields, plus every
-  // newly-picked File in form.image appended under the repeated `image` key
-  // (existing URL strings in form.image are already saved server-side and
-  // are skipped here — only new Files need to be uploaded).
+  // newly-picked File in form.image (existing URL strings are skipped).
   function buildFormData(form) {
     const formData = new FormData();
     formData.append('title', form.title || '');
+    formData.append('student_id', form.student_id || '');
     formData.append('poster_name', form.poster_name || '');
     formData.append('category', form.category || '');
     formData.append('location', form.location || '');
@@ -963,10 +1063,12 @@ const LostItems = ({ currentFilter, role }) => {
     formData.append('created_time_to', form.created_time_to || '');
     formData.append('description', form.description || '');
     if (form.status) formData.append('status', form.status);
-    // Only carry a decline reason when the report is actually Declined —
-    // otherwise send an empty string so a stale remark doesn't linger after
-    // a status change back out of Declined.
-    formData.append('declined_remarks', form.status === 'Declined' ? (form.declined_remarks || '') : '');
+    // Only carry a decline reason when the report is actually Declined
+    // (the automatic one if none was saved before).
+    formData.append(
+      'declined_remarks',
+      form.status === 'Declined' ? (form.declined_remarks || DEFAULT_DECLINE_REMARKS) : ''
+    );
 
     const images = Array.isArray(form.image) ? form.image : (form.image ? [form.image] : []);
     images.forEach((file) => {
@@ -979,14 +1081,26 @@ const LostItems = ({ currentFilter, role }) => {
   async function handleSaveEdit(updatedForm) {
     try {
       const formData = buildFormData(updatedForm);
+
+      // Photos kept in the edit form (existing URLs) -> their ids, so the
+      // backend deletes only the ones the user removed. New files are
+      // already appended as 'image' by buildFormData (max 3 in total).
+      if (Array.isArray(editItem?.images)) {
+        const keptUrls = (Array.isArray(updatedForm.image) ? updatedForm.image : [])
+          .filter((entry) => typeof entry === 'string');
+        const keepIds = editItem.images
+          .filter((photo) => keptUrls.includes(resolveImageUrl(photo.image)))
+          .map((photo) => photo.id);
+        formData.append('keep_image_ids', JSON.stringify(keepIds));
+      }
       await editLostItem(editItem.id, formData);
 
-      window.alert('Item updated successfully!');
+      showToast('Item updated successfully!');
       await fetchItems();
       setEditItem(null);
     } catch (error) {
       console.error('Error updating item:', error);
-      window.alert('Failed to update item. Please try again.');
+      showToast('Failed to update item. Please try again.');
     }
   }
 
@@ -1008,30 +1122,23 @@ const LostItems = ({ currentFilter, role }) => {
         details: 'reported a lost item',
       });
 
-      window.alert(isStaff ? 'Item added and approved successfully!' : 'Item added successfully!');
+      showToast(isStaff ? 'Item added and approved successfully!' : 'Item added successfully!');
       await fetchItems();
       setAddOpen(false);
     } catch (error) {
       console.error('Error adding item:', error);
-      window.alert('Failed to add item. Please try again.');
+      showToast('Failed to add item. Please try again.');
     }
   }
 
   // Updates an item's status in place (Approved / Claimed / Declined, etc.)
-  // without deleting the record — this is what keeps the item trackable by
-  // ticket code afterwards (e.g. so a declined report still shows up when
-  // the reporter checks their ticket). `remarks` is only meaningful (and
-  // saved) when newStatus is 'Declined'.
+  // without deleting the record. student_id is carried through so a
+  // PUT-style update never blanks out the reporter's Student ID.
   async function handleUpdateStatus(item, newStatus, remarks = '') {
     try {
+      // Only the status (and decline reason) changes, so nothing else on
+      // the report is re-sent (an empty description/ID would be rejected).
       const formData = new FormData();
-      formData.append('title', item.title || '');
-      formData.append('poster_name', item.poster_name || '');
-      formData.append('category', item.category || '');
-      formData.append('location', item.location || '');
-      formData.append('created_date', item.created_date || '');
-      formData.append('created_time', item.created_time || '');
-      formData.append('description', item.description || '');
       formData.append('status', newStatus);
       formData.append('declined_remarks', newStatus === 'Declined' ? remarks : '');
 
@@ -1059,17 +1166,13 @@ const LostItems = ({ currentFilter, role }) => {
     }
   }
 
-  // Archives (deletes) an item and logs the action. Server errors are
-  // surfaced with their real message so failures are visible instead of
-  // silently stopping before logActivity ever runs.
-  // NOTE: this is a hard delete — used only for the table's "Archive" action.
-  // Declining a report no longer goes through here; see handleUpdateStatus,
-  // which keeps the record around (as status "Declined") so it stays
-  // trackable by ticket code.
+  // Archives an item (status -> 'Archived') and logs the action.
   async function handleArchive(id) {
     try {
       const target = items.find((i) => i.id === id);
-      await deleteLostItem(id);
+      const formData = new FormData();
+      formData.append('status', 'Archived');
+      await editLostItem(id, formData);
 
       logActivity({
         action: 'archived',
@@ -1077,7 +1180,7 @@ const LostItems = ({ currentFilter, role }) => {
         details: target?.title ? `archived "${target.title}"` : 'archived an item',
       });
 
-      setNotificationMessage('Item archived.');
+      setNotificationMessage('Item archived. You can find it in Utilities > Archive.');
       await fetchItems();
       setSelectedItem(null);
       setActiveConfirmation(null);
@@ -1092,8 +1195,7 @@ const LostItems = ({ currentFilter, role }) => {
     }
   }
 
-  // Shared by the filtered table and the per-tab counts below, so both stay
-  // in sync with the search box.
+  // Shared by the filtered table and the per-tab counts below.
   const matchesSearch = (item) => {
     const searchText = search.toLowerCase();
     return (
@@ -1108,14 +1210,14 @@ const LostItems = ({ currentFilter, role }) => {
   const filteredLost = items
     .filter((item) =>
       item.type?.toUpperCase() === 'LOST' &&
-      item.status === statusFilter &&
+      inStatusTab(item.status, statusFilter) &&
       matchesSearch(item)
     )
     .sort((a, b) => b.id - a.id);
 
   const statusCounts = STATUS_FILTERS.reduce((acc, s) => {
     acc[s] = items.filter(
-      (item) => item.type?.toUpperCase() === 'LOST' && item.status === s && matchesSearch(item)
+      (item) => item.type?.toUpperCase() === 'LOST' && inStatusTab(item.status, s) && matchesSearch(item)
     ).length;
     return acc;
   }, {});
@@ -1133,7 +1235,7 @@ const LostItems = ({ currentFilter, role }) => {
           <div className="flex flex-col xl:flex-row xl:items-center xl:justify-between gap-4 shrink-0">
             <div>
               <div className="flex items-center gap-3">
-                
+
                 <div>
                   <h3 className="text-base sm:text-lg font-black uppercase tracking-[0.16em] text-[#071E3D]">
                     Lost Items
@@ -1249,14 +1351,16 @@ const LostItems = ({ currentFilter, role }) => {
                         >
                           <Eye size={16} />
                         </button>
-
-                        <button
-                          onClick={() => handleEdit(item)}
-                          title="Edit Item"
-                          className="inline-flex h-8 w-8 items-center justify-center rounded bg-[#2D366D] text-white transition hover:opacity-90"
-                        >
-                          <Pencil size={16} />
-                        </button>
+                        {/* No editing once a report is Approved or Declined. */}
+                        {!['Approved', 'Declined', 'Claimed'].includes(item.status) && (
+                          <button
+                            onClick={() => handleEdit(item)}
+                            title="Edit Item"
+                            className="inline-flex h-8 w-8 items-center justify-center rounded bg-[#2D366D] text-white transition hover:opacity-90"
+                          >
+                            <Pencil size={16} />
+                          </button>
+                        )}
 
                         <button
                           onClick={() => setActiveConfirmation({
@@ -1293,39 +1397,12 @@ const LostItems = ({ currentFilter, role }) => {
         </div>
 
         {/* Pagination */}
-        {filteredLost.length > 0 && (
-          <div className="flex flex-col gap-4 border-t border-[#D8E2EF] bg-white px-6 py-4 sm:flex-row sm:items-center sm:justify-between">
-            <p className="text-xs font-bold text-[#7B8AA6]">
-              Showing {startIndex + 1}-
-              {Math.min(startIndex + ITEMS_PER_PAGE, filteredLost.length)} of{" "}
-              {filteredLost.length}
-            </p>
-
-            <div className="flex items-center justify-center gap-3">
-              <button
-                type="button"
-                onClick={() => goToPage(Math.max(currentPage - 1, 1))}
-                disabled={currentPage === 1}
-                className="h-8 rounded-lg border border-[#D8E2EF] px-4 text-[11px] font-black uppercase tracking-wide text-[#0B6B8A] transition hover:bg-[#EAF4FF] disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                Prev
-              </button>
-
-              <span className="text-xs font-bold text-[#7B8AA6]">
-                Page {currentPage} of {totalPages || 1}
-              </span>
-
-              <button
-                type="button"
-                onClick={() => goToPage(Math.min(currentPage + 1, totalPages))}
-                disabled={currentPage === totalPages}
-                className="h-8 rounded-lg border border-[#D8E2EF] px-4 text-[11px] font-black uppercase tracking-wide text-[#0B6B8A] transition hover:bg-[#EAF4FF] disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                Next
-              </button>
-            </div>
-          </div>
-        )}
+        <Pagination
+          currentPage={currentPage}
+          totalItems={filteredLost.length}
+          pageSize={ITEMS_PER_PAGE}
+          onPageChange={goToPage}
+        />
 
       {/* Add Item Modal */}
       {addOpen && (
@@ -1409,9 +1486,9 @@ const LostItems = ({ currentFilter, role }) => {
 
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   <div>
-                    <p className="mb-2 block text-xs font-bold uppercase text-slate-700">Item Name</p>
-                    <div className="min-h-11 rounded-xl border border-slate-300 px-4 py-3 text-sm font-bold text-slate-700">
-                      {toTitleCase(selectedItem.title) || '-'}
+                    <p className="mb-2 block text-xs font-bold uppercase text-slate-700">Student ID</p>
+                    <div className="min-h-11 rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-700">
+                      {selectedItem.student_id || '-'}
                     </div>
                   </div>
 
@@ -1425,31 +1502,40 @@ const LostItems = ({ currentFilter, role }) => {
 
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   <div>
-                    <p className="mb-2 block text-xs font-bold uppercase text-slate-700">Category</p>
-                    <div className="min-h-11 rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-700">
-                      {toTitleCase(selectedItem.category) || '-'}
+                    <p className="mb-2 block text-xs font-bold uppercase text-slate-700">Item Name</p>
+                    <div className="min-h-11 rounded-xl border border-slate-300 px-4 py-3 text-sm font-bold text-slate-700">
+                      {toTitleCase(selectedItem.title) || '-'}
                     </div>
                   </div>
 
                   <div>
-                    <p className="mb-2 block text-xs font-bold uppercase text-slate-700">Area Lost</p>
+                    <p className="mb-2 block text-xs font-bold uppercase text-slate-700">Category</p>
                     <div className="min-h-11 rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-700">
-                      {toTitleCase(selectedItem.location) || '-'}
+                      {toTitleCase(selectedItem.category) || '-'}
                     </div>
                   </div>
                 </div>
 
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   <div>
-                    <p className="mb-2 block text-xs font-bold uppercase text-slate-700">Date Reported</p>
+                    <p className="mb-2 block text-xs font-bold uppercase text-slate-700">Area Lost</p>
                     <div className="min-h-11 rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-700">
-                      {selectedItem.created_date || '-'}
-                      {selectedItem.created_date_to ? ` – ${selectedItem.created_date_to}` : ''}
-                      {selectedItem.created_time ? ` at ${selectedItem.created_time}` : ''}
-                      {selectedItem.created_time_to ? ` – ${selectedItem.created_time_to}` : ''}
+                      {toTitleCase(selectedItem.location) || '-'}
                     </div>
                   </div>
 
+                  <div>
+                    <p className="mb-2 block text-xs font-bold uppercase text-slate-700">Date Reported</p>
+                    <div className="min-h-11 rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-700">
+                      <div><span className="font-semibold">Start:</span> {selectedItem.created_date || '-'}{selectedItem.created_time ? ` · ${String(selectedItem.created_time).slice(0, 5)}` : ''}</div>
+                      {(selectedItem.end_date || selectedItem.end_time) && (
+                        <div><span className="font-semibold">End:</span> {selectedItem.end_date || selectedItem.created_date}{selectedItem.end_time ? ` · ${String(selectedItem.end_time).slice(0, 5)}` : ''}</div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   <div>
                     <p className="mb-2 block text-xs font-bold uppercase text-slate-700">Status</p>
                     <div className="min-h-11 rounded-xl border border-slate-300 px-4 py-3 text-sm font-bold text-slate-700">
@@ -1467,8 +1553,7 @@ const LostItems = ({ currentFilter, role }) => {
                   </div>
                 </div>
 
-                {/* Declined Remarks — shown whenever a reason is on file,
-                    regardless of current status, so history isn't lost. */}
+                {/* Declined Remarks — shown whenever a reason is on file. */}
                 {selectedItem.declined_remarks && (
                   <div>
                     <p className="mb-2 block text-xs font-bold uppercase text-red-700">Declined Remarks</p>
@@ -1507,8 +1592,9 @@ const LostItems = ({ currentFilter, role }) => {
                   </div>
                 )}
 
-                {/* Review Action Controls — gated by current status */}
-                <div className="grid grid-cols-1 gap-4 pt-2 sm:grid-cols-2">
+                {/* Review Action Controls — gated by current status. Edit
+                    lives in the table row (Review · Edit · Archive). */}
+                <div className="flex flex-col gap-3 border-t border-slate-200 pt-4 sm:flex-row">
                   {selectedItem.status === 'Pending' ? (
                     <>
                       <button
@@ -1516,14 +1602,14 @@ const LostItems = ({ currentFilter, role }) => {
                           text: "Are you sure you want to approve this item?",
                           action: () => handleUpdateStatus(selectedItem, 'Approved')
                         })}
-                        className="flex h-12 items-center justify-center gap-2 rounded-xl bg-gradient-to-b from-[#384388] to-[#2D366D] text-sm font-semibold uppercase tracking-wide text-white shadow-md transition-all duration-200 hover:from-[#44509B] hover:to-[#2D366D] hover:shadow-lg active:scale-[0.98]"
+                        className="flex h-12 flex-1 items-center justify-center gap-2 rounded-xl bg-gradient-to-b from-[#384388] to-[#2D366D] text-sm font-semibold uppercase tracking-wide text-white shadow-md transition-all duration-200 hover:from-[#44509B] hover:to-[#2D366D] hover:shadow-lg active:scale-[0.98]"
                       >
                         <CheckCircle size={18} />
                         Approve Item
                       </button>
                       <button
                         onClick={() => setDeclineTarget(selectedItem)}
-                        className="flex h-12 items-center justify-center gap-2 rounded-xl bg-slate-200 text-sm font-black uppercase tracking-wide text-slate-500 transition hover:bg-slate-300"
+                        className="flex h-12 flex-1 items-center justify-center gap-2 rounded-xl bg-slate-200 text-sm font-black uppercase tracking-wide text-slate-500 transition hover:bg-slate-300"
                       >
                         <AlertCircle size={18} />
                         Decline
@@ -1537,7 +1623,7 @@ const LostItems = ({ currentFilter, role }) => {
                             text: "Are you sure you want to mark this item as Claimed?",
                             action: () => handleUpdateStatus(selectedItem, 'Claimed')
                           })}
-                          className="flex h-12 items-center justify-center gap-2 rounded-xl bg-gradient-to-b from-[#384388] to-[#2D366D] text-sm font-semibold uppercase tracking-wide text-white shadow-md transition-all duration-200 hover:from-[#44509B] hover:to-[#2D366D]"
+                          className="flex h-12 flex-1 items-center justify-center gap-2 rounded-xl bg-gradient-to-b from-[#384388] to-[#2D366D] text-sm font-semibold uppercase tracking-wide text-white shadow-md transition-all duration-200 hover:from-[#44509B] hover:to-[#2D366D]"
                         >
                           <CheckCircle size={18} />
                           Mark Claimed
@@ -1545,7 +1631,7 @@ const LostItems = ({ currentFilter, role }) => {
                       )}
                       <button
                         onClick={() => setSelectedItem(null)}
-                        className="flex h-12 items-center justify-center gap-2 rounded-xl bg-slate-200 text-sm font-black uppercase tracking-wide text-slate-500 transition hover:bg-slate-300"
+                        className="flex h-12 flex-1 items-center justify-center gap-2 rounded-xl bg-slate-200 text-sm font-black uppercase tracking-wide text-slate-500 transition hover:bg-slate-300"
                       >
                         Close
                       </button>

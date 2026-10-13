@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useState, useRef, useEffect } from "react";
 import {
   FaSearch,
   FaQuestionCircle,
@@ -13,7 +13,10 @@ import {
   FaArrowRight,
   FaArrowLeft,
   FaTimes,
+  FaArrowUp,
+  FaListOl,
 } from "react-icons/fa";
+import UserGuide from "../components/UserGuide";
 
 const faqData = [
   {
@@ -96,18 +99,18 @@ const faqData = [
   },
 
   {
-    category: "Found & Surrendered Items",
+    category: "Surrendered Items",
     icon: <FaBoxOpen />,
-    description: "Learn how found belongings are submitted and processed.",
+    description: "Learn how surrendered belongings are submitted and processed.",
     questions: [
       {
         id: "surrender",
         q: "How do I surrender a found item?",
-        a: "Use the appropriate surrender or found-item process in the system and provide accurate information about the item. The item will then be processed by authorized staff.",
+        a: "Use the surrender process in the system and provide accurate information about the item. The item will then be processed by authorized staff.",
       },
       {
         id: "surrender-information",
-        q: "What information should I provide about a found item?",
+        q: "What information should I provide when surrendering an item?",
         a: "Provide accurate information such as the item's description, where it was found, when it was found, and any other details requested by the system.",
       },
       {
@@ -252,6 +255,8 @@ const popularQuestions = [
 export default function HelpCenter() {
   const [search, setSearch] = useState("");
   const [open, setOpen] = useState(null);
+  const [showTop, setShowTop] = useState(false);
+  const contentRef = useRef(null);
 
   const normalizedSearch = search.trim().toLowerCase();
 
@@ -295,109 +300,155 @@ export default function HelpCenter() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
+  // Clears any search (the guide only shows on the main view) and
+  // scrolls down to the step-by-step user guide.
+  const openGuide = () => {
+    setSearch("");
+    setOpen(null);
+    setTimeout(() => {
+      document.getElementById("user-guide")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 50);
+  };
+
   // Goes back to wherever the visitor came from (PublicBoard links here via
   // window.location.href = "/help", a full navigation rather than an
   // in-app route change) — browser history.back() reverses that. Falls
   // back to the landing page if there's nowhere to go back to (e.g. this
   // was opened directly / in a new tab with no history).
   const goBack = () => {
-    if (window.history.length > 1) {
-      window.history.back();
-    } else {
-      window.location.href = "/";
-    }
+    if (window.history.length > 1) window.history.back();
+    else window.location.href = "/";
   };
+
+  useEffect(() => {
+  const handle = () => setShowTop(window.scrollY > 250);
+
+  window.addEventListener("scroll", handle);
+  return () => window.removeEventListener("scroll", handle);
+}, []);
 
   return (
     // Fits the viewport instead of being a long scrolling page: the hero
     // (with the back button and search) stays put, and only the FAQ
     // content area below it scrolls, matching how the rest of the app's
     // views (PublicBoard, Leaderboard, Profile) behave.
-    <div className="h-screen overflow-hidden bg-[#F5F8FA] text-slate-800 flex flex-col">
+    <div className="min-h-screen bg-[#F5F8FA] text-slate-800">
 
       {/* =========================================================
           HERO
       ========================================================= */}
-      <section className="relative overflow-hidden bg-[#0B648D] shrink-0">
+      
+<section className="relative overflow-hidden bg-[#0B648D]">
+  <div className="absolute right-0 top-0 h-48 w-48 rounded-full bg-white/5 blur-xl" />
 
-        {/* Decorative background */}
-        <div className="absolute -right-24 -top-24 w-80 h-80 rounded-full bg-white/5" />
-        <div className="absolute right-32 top-32 w-32 h-32 rounded-full bg-white/5" />
-        <div className="absolute -left-20 bottom-[-100px] w-64 h-64 rounded-full bg-[#154B70]/50" />
+  <div className="relative max-w-6xl mx-auto px-4 sm:px-6 py-4">
 
-        <div className="relative max-w-6xl mx-auto px-5 pt-8 pb-10">
+    {/* Back button — right-aligned */}
+    <div className="mb-4 flex justify-end">
+      <button
+        onClick={goBack}
+        className="inline-flex items-center gap-2 rounded-full bg-white/15 px-3 py-2 text-white text-sm font-semibold backdrop-blur"
+      >
+        <FaArrowLeft size={12}/>
+        Back
+      </button>
+    </div>
 
-          {/* BACK BUTTON */}
-          <button
-            onClick={goBack}
-            className="relative z-10 inline-flex items-center gap-2 rounded-full bg-white/10 border border-white/10 px-4 py-2 text-xs font-black uppercase tracking-widest text-white hover:bg-white/20 transition-all"
-          >
-            <FaArrowLeft size={12} />
-            Back
-          </button>
+    <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-5">
 
-          <div className="max-w-3xl mt-6">
-
-            <div className="inline-flex items-center gap-2 bg-white/10 border border-white/10 text-blue-100 px-3 py-1.5 rounded-full text-xs font-semibold tracking-wide">
-              <FaQuestionCircle />
-              SEEK & BALIK SUPPORT
-            </div>
-
-            <h1 className="mt-5 text-4xl md:text-5xl lg:text-6xl font-black tracking-tight text-white">
-              How can we help?
-            </h1>
-
-            <p className="mt-4 text-blue-100 text-base md:text-lg leading-7 max-w-2xl">
-              Find answers about lost items, claims, tracking,
-              accounts, and everything else in Seek & Balik.
-            </p>
-
-            {/* SEARCH */}
-            <div className="mt-8 relative">
-
-              <FaSearch className="absolute left-5 top-1/2 -translate-y-1/2 text-[#0B648D] text-lg" />
-
-              <input
-                type="text"
-                value={search}
-                onChange={(e) => {
-                  setSearch(e.target.value);
-                  setOpen(null);
-                }}
-                placeholder="Search for a question or keyword..."
-                className="w-full h-16 pl-14 pr-14 rounded-2xl bg-white text-slate-800 placeholder:text-slate-400 outline-none shadow-2xl text-sm md:text-base focus:ring-4 focus:ring-white/20"
-              />
-
-              {search && (
-                <button
-                  onClick={clearSearch}
-                  className="absolute right-5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 transition"
-                  aria-label="Clear search"
-                >
-                  <FaTimes />
-                </button>
-              )}
-
-            </div>
-
-            {normalizedSearch && (
-              <div className="mt-3 text-sm text-blue-100">
-                {resultCount}{" "}
-                {resultCount === 1 ? "answer" : "answers"} found for{" "}
-                <span className="font-bold">
-                  "{search.trim()}"
-                </span>
-              </div>
-            )}
-
-          </div>
+      <div className="max-w-xl">
+        <div className="inline-flex items-center gap-2 rounded-full bg-white/10 px-3 py-1 text-[11px] font-bold tracking-wider text-blue-100">
+          <FaQuestionCircle/>
+          SEEK & BALIK SUPPORT
         </div>
-      </section>
+
+        <h1 className="mt-3 text-3xl md:text-5xl font-black text-white leading-tight">
+          Help Center
+        </h1>
+
+        <p className="mt-2 text-blue-100 text-sm md:text-base leading-6">
+          Everything you need to report, surrender, claim, track, and manage Lost & Found requests in one place.
+        </p>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3 text-white text-center text-sm min-w-[220px]">
+        <div className="rounded-2xl bg-white/10 p-4 backdrop-blur">
+          <div className="text-xl font-black">8</div>
+          Help Topics
+        </div>
+        <div className="rounded-2xl bg-white/10 p-4 backdrop-blur">
+          <div className="text-xl font-black">30+</div>
+          FAQs
+        </div>
+      </div>
+    </div>
+
+    <div className="mt-5 relative">
+      <FaSearch className="absolute left-4 top-1/2 -translate-y-1/2 text-[#0B648D]"/>
+
+      <input
+        value={search}
+        onChange={(e)=>{setSearch(e.target.value);setOpen(null);}}
+        placeholder="Search claims, passwords, tracking, lost items..."
+        className="
+  w-full
+  h-14
+  rounded-2xl
+  bg-white
+  border border-white/30
+  pl-12 pr-12
+  text-sm text-slate-700
+  placeholder:text-slate-400
+  shadow-lg
+  outline-none
+  focus:border-[#0B648D]
+  focus:ring-4 focus:ring-white/30
+  transition-all
+"
+      />
+
+      {search && (
+        <button
+          onClick={clearSearch}
+          className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400"
+        >
+          <FaTimes/>
+        </button>
+      )}
+    </div>
+
+    <div className="mt-4 flex gap-2 overflow-x-auto no-scrollbar pb-1">
+      <button
+        onClick={openGuide}
+        className="inline-flex items-center gap-2 whitespace-nowrap rounded-full bg-[#F59E0B] px-4 py-2 text-xs font-bold text-slate-900 hover:bg-white hover:text-[#0B648D] transition"
+      >
+        <FaListOl size={11}/>
+        Step-by-step Guide
+      </button>
+      {faqData.map((cat)=>(
+        <button
+          key={cat.category}
+          onClick={()=>searchPopular(cat.category)}
+          className="whitespace-nowrap rounded-full bg-white/10 px-4 py-2 text-xs font-semibold text-white hover:bg-white hover:text-[#0B648D] transition"
+        >
+          {cat.category}
+        </button>
+      ))}
+    </div>
+
+    {normalizedSearch && (
+      <div className="mt-3 text-xs text-blue-100">
+        {resultCount} results for "{search.trim()}"
+      </div>
+    )}
+  </div>
+</section>
+
 
       {/* =========================================================
           MAIN — the only part of the page that scrolls
       ========================================================= */}
-      <main className="flex-1 overflow-y-auto">
+      <main ref={contentRef} className="max-w-6xl mx-auto px-5 pb-16">
         <div className="max-w-6xl mx-auto px-5 pb-16">
 
         {/* =======================================================
@@ -454,50 +505,45 @@ export default function HelpCenter() {
 
             </section>
 
-            {/* ===================================================
-                POPULAR QUESTIONS
-            =================================================== */}
-            <section className="mt-12">
-
-              <div className="flex items-end justify-between mb-5">
+            
+            {/* ================= QUICK ACTIONS ================= */}
+            <section className="mt-8">
+              <div className="flex items-center justify-between mb-4">
                 <div>
-                  <p className="text-xs font-bold tracking-widest text-[#0B648D] uppercase">
-                    Quick answers
+                  <p className="text-xs font-bold uppercase tracking-widest text-[#0B648D]">
+                    Quick Actions
                   </p>
-
-                  <h2 className="text-2xl font-black text-slate-800 mt-1">
-                    Popular questions
+                  <h2 className="text-2xl font-black text-slate-800">
+                    Popular Help
                   </h2>
                 </div>
               </div>
 
-              <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
-
-                {popularQuestions.map((item) => (
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                {popularQuestions.map((item)=>(
                   <button
                     key={item.title}
-                    onClick={() => searchPopular(item.search)}
-                    className="group bg-white border border-slate-200 rounded-2xl p-5 text-left hover:border-[#0B648D]/30 hover:shadow-lg transition-all"
+                    onClick={()=>searchPopular(item.search)}
+                    className="rounded-2xl bg-gradient-to-br from-white to-slate-50 border border-slate-200 p-4 hover:border-[#0B648D] hover:shadow-md transition text-left"
                   >
-
-                    <div className="w-10 h-10 rounded-xl bg-blue-50 text-[#0B648D] flex items-center justify-center">
+                    <div className="w-10 h-10 rounded-xl bg-[#E6F4FB] flex items-center justify-center text-[#0B648D]">
                       {item.icon}
                     </div>
 
-                    <h3 className="mt-4 font-bold text-sm text-slate-700 leading-5">
+                    <p className="mt-3 text-sm font-semibold text-slate-700 leading-5">
                       {item.title}
-                    </h3>
+                    </p>
 
-                    <div className="mt-4 flex items-center gap-2 text-xs font-semibold text-[#0B648D]">
-                      View answer
-                      <FaArrowRight className="group-hover:translate-x-1 transition-transform" />
-                    </div>
-
+                    <p className="mt-3 text-xs font-bold text-[#0B648D]">
+                      Open FAQ →
+                    </p>
                   </button>
                 ))}
-
               </div>
             </section>
+
+            {/* ================= STEP-BY-STEP USER GUIDE ================= */}
+            <UserGuide />
 
           </>
         )}
@@ -603,7 +649,7 @@ export default function HelpCenter() {
 
                           <button
                             onClick={() => toggle(item.id)}
-                            className="w-full px-6 py-5 flex items-center justify-between gap-5 text-left hover:bg-slate-50 transition-colors"
+                            className="w-full px-4 md:px-6 py-4 md:py-5 flex items-center justify-between gap-4 text-left hover:bg-slate-50 transition-all duration-200"
                             aria-expanded={isOpen}
                           >
 
@@ -634,7 +680,7 @@ export default function HelpCenter() {
                           </button>
 
                           {isOpen && (
-                            <div className="px-6 pb-6">
+                            <div className="px-4 md:px-6 pb-5 animate-fadeIn">
                               <div className="ml-0 md:mr-14 rounded-xl bg-slate-50 border border-slate-100 px-5 py-4">
                                 <p className="text-sm text-slate-600 leading-7">
                                   {item.a}
@@ -691,7 +737,18 @@ export default function HelpCenter() {
         </section>
 
         </div>
-      </main>
+      
+</main>
+
+      {showTop && (
+        <button
+          onClick={() => contentRef.current?.scrollTo({top:0,behavior:"smooth"})}
+          className="fixed bottom-5 right-5 z-50 w-12 h-12 rounded-full bg-[#0B648D] text-white shadow-xl hover:bg-[#084d6c]"
+        >
+          <FaArrowUp className="mx-auto"/>
+        </button>
+      )}
+
     </div>
   );
 }

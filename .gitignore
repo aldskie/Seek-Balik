@@ -1,3 +1,38 @@
+# Secrets (never commit these)
 .env
-package-lock.json
-.gitattributes
+.env.local
+.env.*.local
+
+# Stray file in the project root
+/LF
+
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+env/
+
+# Django data (uploaded to the server separately)
+db.sqlite3
+media/
+staticfiles/
+backend/datadump.json
+
+# Node / Vite
+node_modules/
+frontend/dist/
+
+# Expo / Android builds
+mobile/.expo/
+mobile/dist/
+mobile/web-build/
+*.apk
+*.aab
+*.jks
+*.keystore
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/

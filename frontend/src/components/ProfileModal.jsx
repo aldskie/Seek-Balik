@@ -3,6 +3,7 @@ import React, { useEffect, useState, useRef } from "react";
 import { X, User, Mail, Phone, Shield, Lock, Camera, BadgeCheck, Clock } from "lucide-react";
 import { getCurrentUser } from "../api/api";
 import ChangePasswordModal from "./ChangePasswordModal";
+import { showToast } from "../utils/toast";
 
 const ProfileModal = ({ isOpen, onClose, onLogout, setShowProfileModal }) => {
   const [profileData, setProfileData] = useState(null);
@@ -42,14 +43,14 @@ const ProfileModal = ({ isOpen, onClose, onLogout, setShowProfileModal }) => {
     if (!file) return;
 
     if (!file.type.startsWith("image/")) {
-      window.alert("Please select a valid image file.");
+      showToast("Please select a valid image file.");
       return;
     }
 
     const reader = new FileReader();
     reader.onloadend = () => {
       setLocalImage(reader.result);
-      window.alert("Profile picture updated in view (Frontend only).");
+      showToast("Profile picture updated in view (Frontend only).");
     };
     reader.readAsDataURL(file);
   };

@@ -4,7 +4,7 @@ const MobileNav = ({ currentPage, setCurrentPage, role, onLogout }) => {
   const items = [
     { id: 'Dashboard', label: 'Home', emoji: '◼' },
     { id: 'Lost Items', label: 'Lost', emoji: '◈' },
-    { id: 'Found Items', label: 'Found', emoji: '◈' },
+    { id: 'Found Items', label: 'Surrendered', emoji: '◈' },
     ...(role === 'Admin'
       ? [{ id: 'Users', label: 'Users', emoji: '◉' }]
       : []),

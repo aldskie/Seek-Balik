@@ -1,8 +1,12 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Eye, Archive, RotateCcw, AlertCircle } from 'lucide-react';
+import { Eye, Archive, RotateCcw, AlertCircle, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { getUsers, getUserById, updateUserById, createUser, deleteUserById } from '../api/api';
-import { logActivity } from '../utils/activityLog';
+import { logActivity } from '../utils/Activitylog';
+import Pagination from "../components/Pagination";
+import { confirmAction } from "../components/ConfirmDialog";
+import { sanitizeContactNumber, contactNumberError, CONTACT_NUMBER_LENGTH } from "../utils/contactNumber";
+import { showToast } from "../utils/toast";
 
 // Pulls a human-readable message out of a DRF error response instead of
 // discarding it. DRF error bodies vary in shape depending on where they
@@ -33,15 +37,6 @@ const getErrorMessage = (error, fallback) => {
   return fieldErrors || fallback;
 };
 
-const roleColor = (r) =>
-  r === 'admin'
-    ? 'bg-green-100 text-green-700'
-    : r === 'moderator'
-    ? 'bg-purple-100 text-purple-700'
-    : r === 'student'
-    ? 'bg-orange-100 text-orange-700'
-    : 'bg-blue-100 text-blue-700';
-
 // For admins, "active" status means is_current_admin (the single-admin
 // swap flag) — is_active is always true for admins server-side and
 // carries no meaningful signal for them. For every other role, is_active
@@ -49,9 +44,9 @@ const roleColor = (r) =>
 const statusColor = (user) => {
   if (user.is_archived) return 'bg-gray-400 text-white';
   if (user.role === 'admin') {
-    return user.is_current_admin
-      ? 'bg-emerald-100 text-emerald-700'
-      : 'bg-amber-100 text-amber-700';
+    if (user.is_current_admin) return 'bg-emerald-100 text-emerald-700';
+    if (user.is_pending_admin) return 'bg-sky-100 text-sky-700';
+    return 'bg-amber-100 text-amber-700';
   }
   return user.is_active ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700';
 };
@@ -59,17 +54,28 @@ const statusColor = (user) => {
 const statusText = (user) => {
   if (user.is_archived) return 'Archived';
   if (user.role === 'admin') {
-    return user.is_current_admin ? 'Active' : 'Superseded';
+    if (user.is_current_admin) return 'Active';
+    // New admin: takes over at its first login.
+    if (user.is_pending_admin) return 'Pending first login';
+    return 'Superseded';
   }
   return user.is_active ? 'Active' : 'Inactive';
 };
 
 // Role filter options shown in the dropdown. "all" always means "no role
 // filter applied" and is not itself a role value on the user record.
+// Students and employees are both "Users" of the system, so they are shown
+// and filtered as one group. (The database still stores 'student' or
+// 'employee'; self-registered accounts are saved as 'student'.)
+const USER_ROLES = ['student', 'employee'];
+const roleLabel = (role) =>
+  USER_ROLES.includes(String(role || '').toLowerCase()) ? 'User' : String(role || '');
+
 const ROLE_FILTER_OPTIONS = [
   { value: 'all', label: 'All Roles' },
-  { value: 'student', label: 'Student' },
+  { value: 'admin', label: 'Admin' },
   { value: 'moderator', label: 'Moderator' },
+  { value: 'user', label: 'User (Student / Employee)' },
 ];
 
 // Fixed domain suffix appended to a Student's 8-digit ID Number to form
@@ -179,6 +185,12 @@ const UserModal = ({ user, onSave, onClose }) => {
       if (!form.contact_number?.trim()) newErrors.contact_number = 'Contact number is required';
     }
 
+    // Any contact number entered must be exactly 11 digits.
+    if (!newErrors.contact_number) {
+      const contactError = contactNumberError(form.contact_number);
+      if (contactError) newErrors.contact_number = contactError;
+    }
+
     setErrors(newErrors);
 
     if (Object.keys(newErrors).length > 0) {
@@ -194,6 +206,17 @@ const UserModal = ({ user, onSave, onClose }) => {
     e.preventDefault();
     if (!validate() || isSubmitting) return;
 
+    if (
+      !(await confirmAction({
+        message: user
+          ? 'Save the changes to this user account?'
+          : 'Create this user account? A temporary password will be emailed to them.',
+        confirmLabel: user ? 'Save Changes' : 'Create User',
+      }))
+    ) {
+      return;
+    }
+
     try {
       setIsSubmitting(true);
       await onSave({
@@ -201,7 +224,7 @@ const UserModal = ({ user, onSave, onClose }) => {
         first_name: form.first_name.trim(),
         last_name: form.last_name.trim(),
         email: form.email.trim(),
-        contact_number: form.contact_number.trim(),
+        contact_number: (form.contact_number || '').trim(),
       });
     } catch (err) {
       setWarningMsg(err?.response?.data?.message || err?.message || 'Failed to complete request.');
@@ -256,13 +279,13 @@ const UserModal = ({ user, onSave, onClose }) => {
 
           {form.role === 'admin' && (
             <div className="rounded-xl bg-amber-50 p-4 border border-amber-200 text-amber-800 text-xs font-medium">
-              ⚠️ Saving this account as Admin makes it the current admin immediately. The previously current admin keeps its login access but loses the "current" status.
+              ⚠️ Saving a new account as Admin does not switch admins right away: it becomes the current admin when it logs in for the first time. At that moment the previous admin is deactivated and can no longer log in.
             </div>
           )}
 
           {form.role === 'student' && (
             <div className="rounded-xl bg-orange-50 p-4 border border-orange-200 text-orange-800 text-xs font-medium">
-              🎓 Student accounts are identified by ID Number instead of a typed email/contact number — this is the same ID Number used when a student's item is turned in or claimed on the Found Items board.
+              🎓 Student accounts are identified by ID Number instead of a typed email/contact number — this is the same ID Number used when a student's item is turned in or claimed on the Surrendered Items board.
             </div>
           )}
 
@@ -365,9 +388,11 @@ const UserModal = ({ user, onSave, onClose }) => {
                     className={`h-11 w-full rounded-xl border px-4 text-sm text-slate-700 outline-none placeholder:text-slate-400 transition focus:border-[#1478a7] ${
                       errors.contact_number ? 'border-red-500 bg-red-50/30' : 'border-slate-300'
                     }`}
-                    type="text"
+                    type="tel"
+                    inputMode="numeric"
+                    maxLength={CONTACT_NUMBER_LENGTH}
                     value={form.contact_number || ''}
-                    onChange={(e) => setField('contact_number', e.target.value)}
+                    onChange={(e) => setField('contact_number', sanitizeContactNumber(e.target.value))}
                     placeholder="09123456789"
                   />
                   {errors.contact_number && (
@@ -393,7 +418,13 @@ const UserModal = ({ user, onSave, onClose }) => {
                 >
                   <option value="admin">Admin</option>
                   <option value="moderator">Moderator</option>
-                  <option value="student">Student</option>
+                  {/* Students and employees are both Users. An existing
+                      employee account keeps its stored value. */}
+                  {form.role === 'employee' ? (
+                    <option value="employee">User (Student / Employee)</option>
+                  ) : (
+                    <option value="student">User (Student / Employee)</option>
+                  )}
                 </select>
                 {errors.role && (
                   <span className="text-xs text-red-500 font-medium mt-1 block">{errors.role}</span>
@@ -497,7 +528,8 @@ const Users = () => {
   const [activeUserModal, setActiveUserModal] = useState(null);
   const [archiveUser, setArchiveUser] = useState(null);
   const [restoreUser, setRestoreUser] = useState(null);
-  const [showArchived, setShowArchived] = useState(false);
+  // Archived users are viewed and restored from Utilities > Archive.
+  const showArchived = false;
   const [users, setUsers] = useState([]);
 
   // Pagination states
@@ -565,14 +597,14 @@ const Users = () => {
 
       await fetchUsers();
       setActiveUserModal(null);
-      window.alert(
-        updatedUser.role === 'admin'
-          ? 'User profile updated successfully! This account is now the current admin — any other admin has been superseded.'
+      showToast(
+        updatedUser.role === 'admin' && activeUserModal.role !== 'admin'
+          ? 'User profile updated successfully! This account will become the current admin when it logs in for the first time. Until then, the current admin stays in charge.'
           : 'User profile updated successfully!'
       );
     } catch (error) {
       console.error('Update user error:', error);
-      alert(getErrorMessage(error, 'Failed to update user.'));
+      showToast(getErrorMessage(error, 'Failed to update user.'));
     }
   };
 
@@ -604,24 +636,24 @@ const Users = () => {
       await fetchUsers();
 
       if (createdRecord?.email_sent === false) {
-        window.alert(
+        showToast(
           `User account created, but the welcome email could not be sent to ${newUser.email}.\n\n` +
           (createdRecord.email_error || 'Check the Brevo API configuration on the server.') +
           (isAdmin
-            ? '\n\nThis account is now the current admin — any previous admin has been superseded.'
+            ? '\n\nThis account will become the current admin when it logs in for the first time. Until then, the current admin stays in charge.'
             : '')
         );
       } else {
-        window.alert(
+        showToast(
           `User account created successfully! Credentials emailed to ${newUser.email}.` +
           (isAdmin
-            ? '\n\nThis account is now the current admin — any previous admin has been superseded.'
+            ? '\n\nThis account will become the current admin when it logs in for the first time. Until then, the current admin stays in charge.'
             : '')
         );
       }
     } catch (error) {
-      console.error('Create user error:', error);
-      alert(getErrorMessage(error, 'Failed to create user.'));
+      console.error('Create user error:', error.response?.data || error);
+      showToast(getErrorMessage(error, 'Failed to create user.'));
     }
   };
 
@@ -640,17 +672,17 @@ const Users = () => {
       logActivity({
         actor_name: currentUser?.first_name ? `${currentUser.first_name} ${currentUser.last_name}` : 'Admin',
         actor_role: currentUser?.role || 'admin',
-        action: 'deleted',
+        action: 'archived', // was 'deleted'
         target_title: `${userItem.first_name || ''} ${userItem.last_name || ''}`.trim() || userItem.email,
         details: `Archived user account (${userItem.email})`,
       });
 
       await fetchUsers();
       setArchiveUser(null);
-      window.alert('User archived successfully!');
+      showToast('User archived successfully!');
     } catch (error) {
       console.error('Archive user error:', error);
-      alert(getErrorMessage(error, 'Failed to archive user.'));
+      showToast(getErrorMessage(error, 'Failed to archive user.'));
     }
   };
 
@@ -669,26 +701,36 @@ const Users = () => {
       logActivity({
         actor_name: currentUser?.first_name ? `${currentUser.first_name} ${currentUser.last_name}` : 'Admin',
         actor_role: currentUser?.role || 'admin',
-        action: 'updated',
+        action: 'restored', // was 'updated'
         target_title: `${userItem.first_name || ''} ${userItem.last_name || ''}`.trim() || userItem.email,
         details: `Restored user account (${userItem.email})`,
       });
 
       await fetchUsers();
       setRestoreUser(null);
-      window.alert('User restored successfully!');
+      showToast('User restored successfully!');
     } catch (error) {
       console.error('Restore user error:', error);
-      alert(getErrorMessage(error, 'Failed to restore user.'));
+      showToast(getErrorMessage(error, 'Failed to restore user.'));
     }
   };
 
   // Filter computation
   const filtered = users
     .filter((u) => {
+      // Self-registered accounts that haven't confirmed their emailed
+      // 6-digit code yet are not "registered users". Only an explicit
+      // false hides a row, so accounts/APIs without an is_verified
+      // field (e.g. admin-created users) still show. The backend should
+      // also exclude them from account/users/ — this is the safety net.
+      if (u.is_verified === false) return false;
+
       const searchText = search.toLowerCase();
       const fullName = `${u.first_name || ''} ${u.last_name || ''}`.trim() || u.email || '';
-      const matchesRole = roleFilter === 'all' || u.role?.toLowerCase() === roleFilter;
+      const role = u.role?.toLowerCase();
+      const matchesRole =
+        roleFilter === 'all' ||
+        (roleFilter === 'user' ? USER_ROLES.includes(role) : role === roleFilter);
       return (
         Boolean(u.is_archived) === showArchived &&
         matchesRole &&
@@ -696,31 +738,22 @@ const Users = () => {
           String(u.id).includes(searchText) ||
           u.email?.toLowerCase().includes(searchText) ||
           u.contact_number?.toLowerCase().includes(searchText) ||
+          roleLabel(u.role).toLowerCase().includes(searchText) ||
           u.role?.toLowerCase().includes(searchText))
       );
     })
     .sort((a, b) => b.id - a.id);
 
-  // Pagination calculations
+  // Pagination calculations — mirrors LeaderboardControl's Previous/Next +
+  // "Page X of Y" footer instead of the earlier numbered page-button row.
   const totalPages = Math.ceil(filtered.length / ITEMS_PER_PAGE) || 1;
   const startIndex = (currentPage - 1) * ITEMS_PER_PAGE;
   const paginatedItems = filtered.slice(startIndex, startIndex + ITEMS_PER_PAGE);
 
-  const getVisiblePages = () => {
-    const maxVisiblePages = 5;
-    if (totalPages <= maxVisiblePages) {
-      return Array.from({ length: totalPages }, (_, index) => index + 1);
-    }
-    let startPage = currentPage < maxVisiblePages ? 1 : currentPage - 3;
-    let endPage = startPage + maxVisiblePages - 1;
-    if (endPage > totalPages) {
-      endPage = totalPages;
-      startPage = totalPages - maxVisiblePages + 1;
-    }
-    return Array.from({ length: endPage - startPage + 1 }, (_, index) => startPage + index);
-  };
-
-  const visiblePages = getVisiblePages();
+  // Keep state in sync if the list shrinks (archive/restore/polling)
+  useEffect(() => {
+    if (currentPage > totalPages) setCurrentPage(totalPages);
+  }, [currentPage, totalPages]);
 
   return (
     <div className="bg-white rounded-[18px] border border-[#D8E2EF] shadow-[0_8px_24px_rgba(45,54,109,0.08)] overflow-hidden flex flex-col h-[calc(100vh-135px)]">
@@ -730,7 +763,7 @@ const Users = () => {
           <div className="flex items-center gap-3">
             <div>
               <h3 className="text-base sm:text-lg font-black uppercase tracking-[0.16em] text-[#071E3D]">
-                Registered Users
+                User Management
               </h3>
               <p className="text-xs sm:text-sm text-[#7B8AA6] italic mt-0.5">
                 Manage all registered system user accounts and permissions
@@ -763,17 +796,6 @@ const Users = () => {
                 </option>
               ))}
             </select>
-
-            <button
-              onClick={() => setShowArchived((v) => !v)}
-              className={`px-5 py-2.5 rounded-full font-black uppercase tracking-[0.1em] text-xs shadow-md active:scale-[0.98] transition-all flex items-center justify-center gap-2 whitespace-nowrap shrink-0 ${
-                showArchived
-                  ? 'bg-slate-700 text-white hover:bg-slate-800'
-                  : 'bg-white border border-[#CBD8E8] text-[#0B6B8A] hover:bg-[#EAF4FF]'
-              }`}
-            >
-              <span>🗄️</span> {showArchived ? 'Back to Active Users' : 'View Archived'}
-            </button>
 
             <button
               onClick={() => setAddOpen(true)}
@@ -840,10 +862,8 @@ const Users = () => {
                     </td>
 
                     <td className="border border-gray-300 p-4 text-center align-middle">
-                      <span
-                        className={`rounded px-3 py-1 text-[10px] font-black uppercase ${roleColor(u.role)}`}
-                      >
-                        {u.role}
+                      <span className="text-[11px] font-black uppercase text-slate-700">
+                        {roleLabel(u.role)}
                       </span>
                     </td>
 
@@ -911,49 +931,12 @@ const Users = () => {
       </div>
 
       {/* Pagination Footer */}
-      {filtered.length > 0 && (
-        <div className="flex flex-col gap-4 border-t border-[#D8E2EF] bg-white px-6 py-4 sm:flex-row sm:items-center sm:justify-between">
-          <p className="text-xs font-bold text-[#7B8AA6]">
-            Showing {startIndex + 1}-{Math.min(startIndex + ITEMS_PER_PAGE, filtered.length)} of{' '}
-            {filtered.length}
-          </p>
-
-          <div className="flex items-center justify-center gap-2">
-            <button
-              type="button"
-              onClick={() => setCurrentPage((p) => Math.max(p - 1, 1))}
-              disabled={currentPage === 1}
-              className="h-8 rounded-lg border border-[#D8E2EF] px-3 text-[11px] font-black uppercase tracking-wide text-[#0B6B8A] transition hover:bg-[#EAF4FF] disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              Prev
-            </button>
-
-            {visiblePages.map((page) => (
-              <button
-                key={page}
-                type="button"
-                onClick={() => setCurrentPage(page)}
-                className={`h-8 min-w-8 rounded-lg px-2.5 text-xs font-black transition ${
-                  currentPage === page
-                    ? 'bg-[#0B6B8A] text-white shadow-md'
-                    : 'border border-[#D8E2EF] bg-white text-[#0B6B8A] hover:bg-[#EAF4FF]'
-                }`}
-              >
-                {page}
-              </button>
-            ))}
-
-            <button
-              type="button"
-              onClick={() => setCurrentPage((p) => Math.min(p + 1, totalPages))}
-              disabled={currentPage === totalPages}
-              className="h-8 rounded-lg border border-[#D8E2EF] px-3 text-[11px] font-black uppercase tracking-wide text-[#0B6B8A] transition hover:bg-[#EAF4FF] disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              Next
-            </button>
-          </div>
-        </div>
-      )}
+      <Pagination
+        currentPage={currentPage}
+        totalItems={filtered.length}
+        pageSize={ITEMS_PER_PAGE}
+        onPageChange={setCurrentPage}
+      />
       {/* Dynamic Modals */}
       {addOpen && (
         <UserModal user={null} onSave={handleAddUser} onClose={() => setAddOpen(false)} />
@@ -968,7 +951,7 @@ const Users = () => {
 
       {archiveUser && (
         <ConfirmModal
-          message={`Archive user profile "${archiveUser.email}"? This account will lose system access pathways. You can restore it later from "View Archived".`}
+          message={`Archive user profile "${archiveUser.email}"? This account will lose system access pathways. You can restore it later from Utilities > Archive (Users tab).`}
           confirmLabel="Archive"
           onConfirm={() => handleArchiveUser(archiveUser)}
           onClose={() => setArchiveUser(null)}

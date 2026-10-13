@@ -5,6 +5,9 @@ import { changePassword } from '../api/api.js';
 
 export default function ChangePasswordModal({
   mustChangePassword,
+  // When set (right after logging in with the temporary password), it is
+  // sent as the current password and that field is hidden.
+  currentPasswordValue,
   onSuccess,
   onCancel,
   userRole = 'moderator',
@@ -35,15 +38,27 @@ export default function ChangePasswordModal({
     e.preventDefault();
     setErrorMessage('');
 
-    // Backend matching constraint: 12 to 16 chars
-    if (formData.newPassword.length < 12 || formData.newPassword.length > 16) {
-      setErrorMessage('Password must be 12 to 16 characters long.');
+    // Backend matching constraint: 8 to 12 chars
+    if (formData.newPassword.length < 8 || formData.newPassword.length > 12) {
+      setErrorMessage('Password must be 8 to 12 characters long.');
       return;
     }
 
     // Backend matching constraint: no spaces
     if (/\s/.test(formData.newPassword)) {
       setErrorMessage('Password must not contain spaces.');
+      return;
+    }
+
+    // Backend matching constraint: at least one capital letter
+    if (!/[A-Z]/.test(formData.newPassword)) {
+      setErrorMessage('Password must contain at least one capital letter.');
+      return;
+    }
+
+    // Backend matching constraint: at least one special character
+    if (!/[^A-Za-z0-9\s]/.test(formData.newPassword)) {
+      setErrorMessage('Password must contain at least one special character (e.g. ! @ # $ %).');
       return;
     }
 
@@ -66,7 +81,7 @@ export default function ChangePasswordModal({
 
     try {
       // Call the imported changePassword API utility
-      await changePassword(formData.currentPassword, formData.newPassword);
+      await changePassword(currentPasswordValue || formData.currentPassword, formData.newPassword);
 
       // Reset modal state
       setFormData({ currentPassword: '', newPassword: '', confirmPassword: '' });
@@ -165,7 +180,7 @@ export default function ChangePasswordModal({
             </p>
 
             {/* Conditionally show current password if not forced */}
-            {!mustChangePassword && (
+            {!mustChangePassword && !currentPasswordValue && (
               <PasswordInput
                 label="Current Password"
                 name="currentPassword"
@@ -177,7 +192,7 @@ export default function ChangePasswordModal({
             )}
 
             <PasswordInput
-              label="New Password (12-16 characters)"
+              label="New Password (8-12 characters, 1 capital letter, 1 special character)"
               name="newPassword"
               value={formData.newPassword}
               onChange={handleChange}
@@ -195,6 +210,17 @@ export default function ChangePasswordModal({
             />
 
             <div className="flex items-center justify-end gap-3 pt-3">
+              {/* Required change (temporary password): the user can't skip
+                  it, but can log out instead and come back later. */}
+              {mustChangePassword && onCancel && (
+                <button
+                  type="button"
+                  onClick={onCancel}
+                  className="mr-auto rounded-xl border border-red-200 px-4 py-2 text-sm font-medium text-red-600 hover:bg-red-50 transition-colors"
+                >
+                  Log out
+                </button>
+              )}
               {!mustChangePassword && (
                 <button
                   type="button"

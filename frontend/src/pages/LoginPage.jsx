@@ -10,7 +10,9 @@ import {
   FaSignOutAlt,
   FaIdCard,
   FaEnvelope,
-  FaChevronDown
+  FaChevronDown,
+  FaEye,
+  FaEyeSlash
 } from 'react-icons/fa';
 
 // ================= USER PROFILE & LOGOUT DROPDOWN =================
@@ -103,6 +105,8 @@ function LoginFormContent({ isModal, onClose, onLoginSuccess }) {
   const navigate = useNavigate();
   const [studentId, setStudentId] = useState('');
   const [password, setPassword] = useState('');
+  // Eye button on the password field: show / hide what was typed.
+  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -189,12 +193,22 @@ function LoginFormContent({ isModal, onClose, onLoginSuccess }) {
               <FaLock size={13} />
             </div>
             <input
-              type="password"
+              type={showPassword ? 'text' : 'password'}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               placeholder="••••••••"
-              className="w-full pl-10 pr-4 py-2.5 text-xs border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#005B82]/30 bg-slate-50/50"
+              autoComplete="current-password"
+              className="w-full pl-10 pr-10 py-2.5 text-xs border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#005B82]/30 bg-slate-50/50"
             />
+            <button
+              type="button"
+              onClick={() => setShowPassword((v) => !v)}
+              title={showPassword ? 'Hide password' : 'Show password'}
+              aria-label={showPassword ? 'Hide password' : 'Show password'}
+              className="absolute inset-y-0 right-0 flex w-10 items-center justify-center rounded-r-xl text-slate-400 transition hover:text-[#005B82]"
+            >
+              {showPassword ? <FaEyeSlash size={14} /> : <FaEye size={14} />}
+            </button>
           </div>
         </div>
 

@@ -23,13 +23,41 @@ def get_item_points(item):
 
 def _normalize_student_id(raw_id):
     """
-    Strip everything but digits, so "12345678" and the stored
-    "12345678@slc-sflu.edu.ph" format both resolve to the same player.
+    The ID number is the one reference for a leaderboard player, whether
+    or not the student has an account yet. "12345678" and
+    "12345678@slc-sflu.edu.ph" both resolve to "12345678".
     This has to match Leaderboard.jsx's normalizeId() on the frontend --
     that's what the "You" badge and student-ID matching compare against.
     Returns "" if nothing digit-like is present.
     """
-    return "".join(ch for ch in (raw_id or "") if ch.isdigit())
+    local_part = str(raw_id or "").split("@", 1)[0]
+    return "".join(ch for ch in local_part if ch.isdigit())
+
+
+def registered_accounts_by_id():
+    """
+    {id_number: "First Last"} for every verified account whose email or
+    username starts with an ID number. Used so a student who registers
+    AFTER earning points is shown under their account name, with all the
+    points they earned before registering (points are keyed by ID number,
+    never by account).
+    """
+    from django.contrib.auth import get_user_model
+
+    Account = get_user_model()
+    accounts = Account.objects.all()
+    if hasattr(Account, "is_verified"):
+        accounts = accounts.filter(is_verified=True)
+
+    names = {}
+    for account in accounts.only("email", "username", "first_name", "last_name"):
+        for value in (account.email, account.username):
+            id_number = _normalize_student_id(value)
+            if id_number:
+                full = f"{account.first_name or ''} {account.last_name or ''}".strip()
+                names.setdefault(id_number, full)
+                break
+    return names
 
 
 @transaction.atomic
@@ -39,6 +67,12 @@ def award_points(student_id, full_name, points, reason, item_id=None):
 
     if not clean_student_id or points <= 0:
         return None
+
+    # A registered student's account name always wins over whatever name
+    # was typed on the item form.
+    account_name = registered_accounts_by_id().get(clean_student_id)
+    if account_name:
+        clean_name = account_name
 
     player, _ = LeaderboardPlayer.objects.get_or_create(
         student_id=clean_student_id,
@@ -102,3 +136,26 @@ def award_claim_points(student_id, full_name, item, reason="ITEM_CLAIMED"):
         reason=reason,
         item_id=item.id,
     )
+
+@transaction.atomic
+def revoke_item_points(item_id):
+    """
+    Takes back every point given for one item (the surrender points and the
+    claimed bonus) and removes those records. Used when a surrendered item is
+    deleted, e.g. one added by mistake, so the finder doesn't keep points for
+    an item that no longer exists. Returns how many points were removed.
+    """
+    records = PointTransaction.objects.filter(item_id=str(item_id))
+
+    # Add up per player first, then update each player once (one item can
+    # have both a surrender and a claimed-bonus record for the same finder).
+    per_player = {}
+    for player_id, points in records.values_list("player_id", "points"):
+        per_player[player_id] = per_player.get(player_id, 0) + points
+
+    for player in LeaderboardPlayer.objects.select_for_update().filter(pk__in=per_player):
+        player.points = max(0, player.points - per_player[player.pk])
+        player.save(update_fields=["points"])
+
+    records.delete()
+    return sum(per_player.values())

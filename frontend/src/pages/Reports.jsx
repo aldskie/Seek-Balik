@@ -11,18 +11,56 @@ import {
   FaChevronDown,
   FaCalendarAlt
 } from "react-icons/fa";
-import { getItems } from "../api/api";
+import { getItems, getLeaderboardSettings } from "../api/api";
+import ComparativeReport, {
+  buildComparison,
+  COMPARISON_MODES
+} from "../components/ComparativeReport";
+import saoLogo from "../assets/sao.png";
+import slcLogo from "../assets/slc-logo.png";
+import seekBalikLogo from "../assets/seek-balik-logo.jpg";
 
-// School letterhead logo (embedded so the printed report is self-contained)
-const SCHOOL_LOGO = "data:image/png;base64,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";
 const SCHOOL_NAME = "Saint Louis College";
 const SCHOOL_ADDRESS = "City of San Fernando, La Union";
 
-// Canonical filter option lists (used instead of deriving from live data,
-// which can produce duplicate/inconsistent entries)
-const AREAS = [
+// ================= HELPERS =================
+
+// Whole-number percent. Never rounds up to 100% unless it really is all of
+// them (199 of 200 used to show "100%").
+const pct = (a, b) => {
+  if (b === 0) return 0;
+  const value = Math.round((a / b) * 100);
+  return value === 100 && a < b ? 99 : value;
+};
+
+const riskLevel = (lost) =>
+  lost >= 15 ? "High Risk" : lost >= 8 ? "Medium Risk" : "Low Risk";
+
+const riskColor = (risk) =>
+  risk.startsWith("High")
+    ? "bg-rose-50 text-rose-600 border border-rose-100"
+    : risk.startsWith("Medium")
+    ? "bg-amber-50 text-amber-600 border border-amber-100"
+    : "bg-emerald-50 text-emerald-600 border border-emerald-100";
+
+const EMPTY_FILTERS = {
+  locations: [],
+  categories: [],
+  statuses: [],
+  types: [],
+  dateRange: { start: "", end: "" }
+};
+
+// ─── Reference lists ────────────────────────────────────────────────────────
+// These are the EXACT values the LostItems.jsx / FoundItems.jsx forms submit,
+// so records match by plain (case-insensitive) comparison — no alias maps
+// needed. If a form's dropdown changes, update the matching list here.
+
+// Same list as the AREAS dropdown in LostItems.jsx / FoundItems.jsx.
+// "Others" is the catch-all: any location not on this list (custom text typed
+// under "Others", or old free-text values) is counted under it.
+const AREAS_REFERENCE = [
   'Grandstand',
-  'Criminology Building',
   'Verbist Building',
   'Chapel',
   'Administrative Building (Main Building)',
@@ -40,78 +78,62 @@ const AREAS = [
   'Others'
 ];
 
-const CATS = ['Accessories', 'ID', 'Academic Materials', 'Bags & Wallets', 'Clothing', 'Electronic', 'Keys'];
+// Same list as CATS in LostItems.jsx / FoundItems.jsx. Retired categories
+// (e.g. "Personal", "Valuables") no longer exist, so they are not listed and
+// are left out of the Category filter and the Item Categories breakdown.
+const CATEGORIES_REFERENCE = [
+  'Accessories', 'ID', 'Academic Materials', 'Bags & Wallets', 'Clothing', 'Electronic', 'Keys'
+];
 
-// Legacy/synonym location strings seen in older records, mapped to the
-// canonical AREAS entry they actually refer to. Anything that's neither an
-// exact AREAS match nor a known synonym falls back to "Others" so it groups
-// with everything else non-standard instead of each raw string becoming its
-// own row in the Location Hotspots table (e.g. "Basement", "All").
-const LOCATION_SYNONYMS = {
-  'canteen': 'SLC Canteen',
-  'gym': 'Gymnasium',
-  'gymnasium ': 'Gymnasium',
-  'main building': 'Administrative Building (Main Building)',
-  'admin building': 'Administrative Building (Main Building)',
-  'administrative building': 'Administrative Building (Main Building)',
-  'grandstand area': 'Grandstand',
+// Item status lifecycle. Used to keep the Status filter, chart and summary in
+// a sensible order (Pending → Approved → Claimed → Archived → Declined).
+const STATUS_REFERENCE = ['Pending', 'Approved', 'Claimed', 'Archived', 'Declined'];
+
+// The only two item types: LostItems.jsx saves "Lost", FoundItems.jsx saves
+// "Surrendered".
+const TYPES_REFERENCE = ['Lost', 'Surrendered'];
+
+// Case/whitespace-insensitive match against a reference list.
+// Returns the canonical value, or null when there is no match.
+const matchReference = (raw, referenceList) => {
+  const lower = String(raw || '').trim().toLowerCase();
+  if (!lower) return null;
+  return referenceList.find((ref) => ref.toLowerCase() === lower) || null;
 };
 
-/**
- * Turn a raw stored `location` string into an array of one or more
- * canonical AREAS entries. Location is stored as a single text field that
- * can hold: a single canonical area, a legacy synonym ("Gym"), a
- * comma-separated list of several areas ("Grandstand, Chapel, Library"),
- * or junk that predates the current area list ("All", "Basement"). Without
- * this, a multi-area record becomes its own one-off row instead of
- * contributing to each area it actually lists, and legacy synonyms
- * fragment into duplicate-looking rows next to their canonical name.
- */
-function normalizeAreas(rawLocation) {
-  if (!rawLocation || typeof rawLocation !== 'string') return [];
-  const parts = rawLocation.split(',').map((s) => s.trim()).filter(Boolean);
-  if (parts.length === 0) return [];
+// Older public reports saved "SAO Lobby"; count them with the lobby.
+const LOCATION_ALIASES = { 'sao lobby': 'Student Affairs Office Lobby' };
+const normalizeLocation = (raw) =>
+  matchReference(raw, AREAS_REFERENCE) ||
+  LOCATION_ALIASES[String(raw || '').trim().toLowerCase()] ||
+  'Others';
+const normalizeCategory = (raw) => matchReference(raw, CATEGORIES_REFERENCE); // null = not a current category
+const normalizeStatus = (raw) => matchReference(raw, STATUS_REFERENCE) || String(raw || '').trim();
+const normalizeType = (raw) => matchReference(raw, TYPES_REFERENCE) || String(raw || '').trim();
 
-  const resolved = parts.map((part) => {
-    if (AREAS.includes(part)) return part;
-    const synonym = LOCATION_SYNONYMS[part.toLowerCase()];
-    return synonym || 'Others';
+// LostItems.jsx can store several areas in one comma-separated string
+// (e.g. "Library, Chapel"). Returns each area normalized and de-duplicated,
+// so a report with 3 areas counts once in each of them.
+const splitLocations = (raw) => {
+  const parts = String(raw || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return [...new Set(parts.map(normalizeLocation))];
+};
+
+// Sorts already-normalized values into the order of a reference list, with
+// anything not found pushed to the end instead of being dropped.
+function sortByReference(values, referenceList) {
+  return [...values].sort((a, b) => {
+    const ia = referenceList.indexOf(a);
+    const ib = referenceList.indexOf(b);
+    if (ia === -1 && ib === -1) return a.localeCompare(b);
+    if (ia === -1) return 1;
+    if (ib === -1) return -1;
+    return ia - ib;
   });
-
-  // De-duplicate — a record might list the same area twice, or two
-  // unrecognized parts might both resolve to "Others".
-  return Array.from(new Set(resolved));
 }
-
-// ================= HELPERS =================
-
-// `a` is always expected to be a subset of `b` (e.g. claimed items out of
-// all logged items, or recovered items out of all items at a location), so
-// the result is mathematically bounded at 100%. Math.min(100, ...) is kept
-// as a defensive floor/ceiling only — it guards against bad/duplicate data
-// producing a nonsensical >100% figure, it is not what makes the math work.
-const pct = (a, b) => (b === 0 ? 0 : Math.min(100, Math.round((a / b) * 100)));
-
-const riskLevel = (lost) =>
-  lost >= 15 ? "High Risk" : lost >= 8 ? "Medium Risk" : "Low Risk";
-
-const riskColor = (risk) =>
-  risk.startsWith("High")
-    ? "bg-rose-50 text-rose-600 border border-rose-100"
-    : risk.startsWith("Medium")
-    ? "bg-amber-50 text-amber-600 border border-amber-100"
-    : "bg-emerald-50 text-emerald-600 border border-emerald-100";
-
-const pctColor = (p) =>
-  p >= 70 ? "text-emerald-600" : p >= 50 ? "text-amber-600" : "text-rose-500";
-
-const EMPTY_FILTERS = {
-  locations: [],
-  categories: [],
-  statuses: [],
-  types: [],
-  dateRange: { start: "", end: "" }
-};
 
 // ================= STAT CARD =================
 
@@ -173,11 +195,17 @@ const Donut = ({ value, label, color = "#2D366D" }) => {
 
 // ================= HORIZONTAL BAR =================
 
-const HBar = ({ value, max, color = "#2D366D" }) => (
-  <div className="h-3 bg-slate-100 rounded-full overflow-hidden">
+// Two-segment bar used by the Item Categories panel — splits each category's
+// total into its Lost vs Found (Surrendered) portion.
+const StackedHBar = ({ lost, found, total }) => (
+  <div className="h-3 bg-slate-100 rounded-full overflow-hidden flex">
     <div
-      className="h-full rounded-full transition-all duration-300"
-      style={{ width: `${max ? (value / max) * 100 : 0}%`, background: color }}
+      className="h-full bg-rose-400 transition-all duration-300"
+      style={{ width: `${total ? (lost / total) * 100 : 0}%` }}
+    />
+    <div
+      className="h-full bg-emerald-400 transition-all duration-300"
+      style={{ width: `${total ? (found / total) * 100 : 0}%` }}
     />
   </div>
 );
@@ -238,21 +266,25 @@ const Section = ({ title, className = "", children }) => (
 // ================= SUMMARY REPORT (PRINT-ONLY) =================
 // This is what actually gets printed / exported when "Print Report" is
 // pressed. It's a plain, formal written summary of the filtered data —
-// not the dashboard cards/charts — built for a reader (e.g. a supervisor
-// or "navigator") who just needs the key figures and findings.
+// not the dashboard cards/charts.
 
 const SummaryReport = ({
   totalItems,
   lostItems,
   surrendered,
   claimed,
+  recoveredLost = [],
+  releasedFound = [],
   recoveryRate,
   areaStats,
   catStats,
-  statusStats,
+  statusStats = [],
+  declinedLeftOut = 0,
   topHotspot,
   activeChips,
-  filters
+  filters,
+  comparativeRows = [],
+  comparativeMode = "monthly"
 }) => {
   const now = new Date();
   const generatedOn = `${now.toLocaleDateString()} ${now.toLocaleTimeString([], {
@@ -260,11 +292,7 @@ const SummaryReport = ({
     minute: "2-digit"
   })}`;
 
-  const highRiskAreas = areaStats.filter((a) => riskLevel(a.lost) === "High Risk");
-  const mediumRiskAreas = areaStats.filter((a) => riskLevel(a.lost) === "Medium Risk");
 
-  const topArea = areaStats[0];
-  const topCategory = catStats[0];
 
   const periodLabel =
     filters.dateRange.start && filters.dateRange.end
@@ -278,11 +306,23 @@ const SummaryReport = ({
   return (
     <div className="summary-report">
       <div className="sr-letterhead">
-        <img src={SCHOOL_LOGO} alt={`${SCHOOL_NAME} seal`} className="sr-logo" />
+        <div className="sr-letterhead-logos-left">
+          <img src={saoLogo} alt="Student Affairs Office seal" className="sr-logo" />
+          <img src={slcLogo} alt={`${SCHOOL_NAME} seal`} className="sr-logo" />
+        </div>
         <div className="sr-letterhead-text">
           <p className="sr-school-name">{SCHOOL_NAME}</p>
           <p className="sr-school-address">{SCHOOL_ADDRESS}</p>
+          <p className="sr-office-label">Student Affairs Office</p>
         </div>
+        <div className="sr-letterhead-logos-right">
+          <img src={seekBalikLogo} alt="Seek &amp; Balik logo" className="sr-logo-brand" />
+        </div>
+      </div>
+
+      <div className="sr-brandbar">
+        <p className="sr-brand-name">Seek &amp; Balik</p>
+        <p className="sr-brand-tagline">A Lost and Found Management System</p>
       </div>
 
       <h1 className="sr-title">Lost &amp; Found Statistical Summary Report</h1>
@@ -306,111 +346,144 @@ const SummaryReport = ({
         </tbody>
       </table>
 
-      <h2 className="sr-heading">1. Overview</h2>
-      <p className="sr-body">
-        During the period covered by this report, {totalItems} item record{totalItems === 1 ? "" : "s"} were
-        logged, comprising {lostItems.length} lost item report{lostItems.length === 1 ? "" : "s"} and{" "}
-        {surrendered.length} surrendered item report{surrendered.length === 1 ? "" : "s"}. Of these,{" "}
-        {claimed.length} item{claimed.length === 1 ? "" : "s"} {claimed.length === 1 ? "has" : "have"} been
-        claimed or returned to their owner, giving an overall recovery rate of {recoveryRate}%.
-      </p>
+      {/* Every section is a table (no paragraphs), so the printout reads
+          like a form. Sections stay together across page breaks. */}
+      <div className="sr-keep">
+        <h2 className="sr-heading">1. Summary</h2>
+        <table className="sr-table">
+          <thead>
+            <tr>
+              <th>Measure</th>
+              <th>Count</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td>Total Item Records</td><td>{totalItems}</td></tr>
+            <tr><td>Lost Items Reported</td><td>{lostItems.length}</td></tr>
+            <tr><td>Surrendered Items</td><td>{surrendered.length}</td></tr>
+            <tr><td>Claimed Items (total)</td><td>{claimed.length}</td></tr>
+            <tr><td>&nbsp;&nbsp;Lost Reports Recovered</td><td>{recoveredLost.length}</td></tr>
+            <tr><td>&nbsp;&nbsp;Surrendered Items Released to Owners</td><td>{releasedFound.length}</td></tr>
+            <tr><td>Recovery Rate</td><td>{recoveryRate}%</td></tr>
+            <tr><td>Top Hotspot</td><td>{topHotspot}</td></tr>
+            {declinedLeftOut > 0 && (
+              <tr><td>Declined Reports (not counted above)</td><td>{declinedLeftOut}</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
 
-      <h2 className="sr-heading">2. Key Metrics</h2>
-      <table className="sr-table">
-        <tbody>
-          <tr>
-            <td>Recovery Rate</td>
-            <td>{recoveryRate}%</td>
-          </tr>
-          <tr>
-            <td>Lost Items Reported</td>
-            <td>{lostItems.length}</td>
-          </tr>
-          <tr>
-            <td>Found (Surrendered) Items</td>
-            <td>{surrendered.length}</td>
-          </tr>
-          <tr>
-            <td>Claimed / Returned Items</td>
-            <td>{claimed.length}</td>
-          </tr>
-          <tr>
-            <td>Top Hotspot</td>
-            <td>{topHotspot}</td>
-          </tr>
-        </tbody>
-      </table>
-
-      <h2 className="sr-heading">3. Location Risk Analysis</h2>
-      <p className="sr-body">
-        {areaStats.length === 0 ? (
-          "No location data is available for the current filters."
-        ) : (
-          <>
-            {topArea?.area} recorded the highest number of lost items ({topArea?.lost} report
-            {topArea?.lost === 1 ? "" : "s"}) among all locations.{" "}
-            {highRiskAreas.length > 0
-              ? `${highRiskAreas.length} location${highRiskAreas.length === 1 ? " is" : "s are"} currently classified as High Risk: ${highRiskAreas
-                  .map((a) => a.area)
-                  .join(", ")}.`
-              : "No locations currently meet the High Risk threshold."}{" "}
-            {mediumRiskAreas.length > 0 &&
-              `${mediumRiskAreas.length} additional location${
-                mediumRiskAreas.length === 1 ? " is" : "s are"
-              } at Medium Risk: ${mediumRiskAreas.map((a) => a.area).join(", ")}.`}
-          </>
-        )}
-      </p>
-
-      {areaStats.length > 0 && (
+      <div className="sr-keep">
+        <h2 className="sr-heading">2. Location Risk Analysis</h2>
         <table className="sr-table">
           <thead>
             <tr>
               <th>Location</th>
               <th>Lost</th>
+              <th>Surrendered</th>
               <th>Recovered</th>
               <th>Rate</th>
               <th>Risk</th>
             </tr>
           </thead>
           <tbody>
-            {areaStats.slice(0, 8).map((area, index) => (
-              <tr key={index}>
-                <td>{area.area}</td>
-                <td>{area.lost}</td>
-                <td>{area.recovered}</td>
-                <td>{pct(area.recovered, area.total)}%</td>
-                <td>{riskLevel(area.lost)}</td>
-              </tr>
-            ))}
+            {areaStats.length === 0 ? (
+              <tr><td colSpan={6}>No location data for the current filters.</td></tr>
+            ) : (
+              areaStats.map((area, index) => (
+                <tr key={index}>
+                  <td>{area.area}</td>
+                  <td>{area.lost}</td>
+                  <td>{area.surrendered}</td>
+                  <td>{area.recovered}</td>
+                  <td>{pct(area.recovered, area.lost)}%</td>
+                  <td>{riskLevel(area.lost)}</td>
+                </tr>
+              ))
+            )}
           </tbody>
         </table>
+      </div>
+
+      <div className="sr-keep">
+        <h2 className="sr-heading">3. Category Breakdown</h2>
+        <table className="sr-table">
+          <thead>
+            <tr>
+              <th>Category</th>
+              <th>Lost</th>
+              <th>Surrendered</th>
+              <th>Total</th>
+            </tr>
+          </thead>
+          <tbody>
+            {catStats.length === 0 ? (
+              <tr><td colSpan={4}>No category data for the current filters.</td></tr>
+            ) : (
+              catStats.map((cat, index) => (
+                <tr key={index}>
+                  <td>{cat.cat}</td>
+                  <td>{cat.lost}</td>
+                  <td>{cat.surrendered}</td>
+                  <td>{cat.count}</td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      {/* The status breakdown was passed in but never printed. */}
+      <div className="sr-keep">
+        <h2 className="sr-heading">4. Status Breakdown</h2>
+        <table className="sr-table">
+          <thead>
+            <tr>
+              <th>Status</th>
+              <th>Items</th>
+            </tr>
+          </thead>
+          <tbody>
+            {statusStats.length === 0 ? (
+              <tr><td colSpan={2}>No status data for the current filters.</td></tr>
+            ) : (
+              statusStats.map((st) => (
+                <tr key={st.label}>
+                  <td>{st.label}</td>
+                  <td>{st.value}</td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      {comparativeRows.length > 0 && (
+        <div className="sr-keep">
+          <h2 className="sr-heading">
+            5. Lost vs Surrendered Comparison (
+            {(COMPARISON_MODES.find((m) => m.key === comparativeMode) || {}).label})
+          </h2>
+          <table className="sr-table">
+            <thead>
+              <tr>
+                <th>Period</th>
+                <th>Lost Items</th>
+                <th>Surrendered Items</th>
+              </tr>
+            </thead>
+            <tbody>
+              {[...comparativeRows].reverse().map((r) => (
+                <tr key={r.key}>
+                  <td>{r.label}{r.current ? " (so far)" : ""}</td>
+                  <td>{r.lost}</td>
+                  <td>{r.found}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
-
-      <h2 className="sr-heading">4. Category Breakdown</h2>
-      <p className="sr-body">
-        {catStats.length === 0 ? (
-          "No category data is available for the current filters."
-        ) : (
-          <>
-            The most frequently reported item category is "{topCategory?.cat}", accounting for{" "}
-            {topCategory?.count} record{topCategory?.count === 1 ? "" : "s"} ({pct(topCategory?.count || 0, totalItems)}% of
-            all filtered items). {catStats.length > 1 ? "Other reported categories include " : ""}
-            {catStats
-              .slice(1, 6)
-              .map((c) => `${c.cat} (${c.count})`)
-              .join(", ")}
-            {catStats.length > 1 ? "." : ""}
-          </>
-        )}
-      </p>
-
-      <h2 className="sr-heading">5. Status Distribution</h2>
-      <p className="sr-body">
-        {statusStats.length === 0
-          ? "No status data is available for the current filters."
-          : statusStats.map((s) => `${s.label}: ${s.value}`).join(" · ")}
-      </p>
 
       <p className="sr-footer">
         This report was generated automatically by the Lost &amp; Found Management System on {generatedOn}.
@@ -535,17 +608,20 @@ const DateRangePicker = ({ range, onChange }) => {
     let end;
 
     if (key === "week") {
+      // Monday to Sunday, the same week the public board and the
+      // comparison chart use.
       start = new Date(today);
-      start.setDate(today.getDate() - today.getDay());
+      start.setDate(today.getDate() - ((today.getDay() + 6) % 7));
       end = new Date(start);
       end.setDate(start.getDate() + 6);
     } else if (key === "month") {
       start = new Date(today.getFullYear(), today.getMonth(), 1);
       end = new Date(today.getFullYear(), today.getMonth() + 1, 0);
     } else if (key === "last30") {
+      // Today and the 29 days before it (it used to cover 31 days).
       end = today;
       start = new Date(today);
-      start.setDate(today.getDate() - 30);
+      start.setDate(today.getDate() - 29);
     } else if (key === "year") {
       start = new Date(today.getFullYear(), 0, 1);
       end = new Date(today.getFullYear(), 11, 31);
@@ -737,12 +813,27 @@ export default function Reports() {
   const [loading, setLoading] = useState(true);
 
   const [filters, setFilters] = useState(EMPTY_FILTERS);
+  // Lost vs Found comparison period: weekly / monthly / semestral / yearly.
+  const [compareMode, setCompareMode] = useState("monthly");
+  // Semester months from Leaderboard Control, for the Semestral comparison.
+  const [semConfig, setSemConfig] = useState(null);
 
+  useEffect(() => {
+    getLeaderboardSettings()
+      .then((data) => setSemConfig(data?.semConfig || null))
+      .catch(() => setSemConfig(null));
+  }, []);
+
+  // ─── Real-time data ────────────────────────────────────────────────────
+  // getItems() is the same endpoint FoundItems.jsx and LostItems.jsx poll,
+  // and it returns BOTH item types together (type "Lost" from LostItems.jsx,
+  // type "Surrendered" from FoundItems.jsx). Polled every 3s to match those
+  // pages, so a new report/turn-in shows up here without a manual refresh.
   useEffect(() => {
     async function fetchItems() {
       try {
         const data = await getItems();
-        setItems(data || []);
+        setItems(Array.isArray(data) ? data : data?.results || []);
       } catch (error) {
         console.log("Reports fetch error:", error);
       } finally {
@@ -754,35 +845,46 @@ export default function Reports() {
 
     const interval = setInterval(() => {
       fetchItems();
-    }, 5000);
+    }, 3000);
 
     return () => clearInterval(interval);
   }, []);
 
   // ================= DATE HELPERS =================
 
+  // LostItems.jsx and FoundItems.jsx both save the date as `created_date`.
   const getItemDate = (item) => {
-    const raw = item.date || item.dateReported || item.createdAt;
+    const raw = item.created_date || item.date || item.dateReported || item.createdAt;
     if (!raw) return null;
     const d = new Date(raw);
     return isNaN(d.getTime()) ? null : d;
   };
 
   // ================= FILTER OPTIONS =================
-  // Location and Category now come from the fixed AREAS/CATS lists above,
-  // so the dropdowns always show the full canonical set (no duplicates or
-  // stray values from inconsistent data entry). Status and Type are still
-  // derived live since there's no fixed list for those.
 
   const filterOptions = useMemo(() => {
-    const uniq = (key) =>
-      Array.from(new Set(items.map((i) => i[key]).filter(Boolean))).sort();
+    const locationSet = new Set();
+    const categorySet = new Set();
+    // Always list the full status lifecycle (Pending, Approved, Claimed,
+    // Archived, Declined), plus any other status found in the data,
+    // so the filter doesn't depend on which statuses happen to exist right now.
+    const statusSet = new Set(STATUS_REFERENCE);
+
+    items.forEach((i) => {
+      splitLocations(i.location).forEach((l) => locationSet.add(l));
+
+      const cat = normalizeCategory(i.category);
+      if (cat) categorySet.add(cat);
+
+      const status = normalizeStatus(i.status);
+      if (status) statusSet.add(status);
+    });
 
     return {
-      locations: AREAS,
-      categories: CATS,
-      statuses: uniq("status"),
-      types: uniq("type")
+      locations: sortByReference([...locationSet], AREAS_REFERENCE),
+      categories: sortByReference([...categorySet], CATEGORIES_REFERENCE),
+      statuses: sortByReference([...statusSet], STATUS_REFERENCE),
+      types: TYPES_REFERENCE
     };
   }, [items]);
 
@@ -799,23 +901,19 @@ export default function Reports() {
 
   const filteredItems = useMemo(() => {
     return items.filter((item) => {
-      // Match against every canonical area this item actually belongs to
-      // (splitting multi-area records and resolving legacy synonyms), not
-      // just an exact match on the raw stored string — otherwise selecting
-      // "Grandstand" would miss a record stored as "Grandstand, Chapel" or
-      // as the legacy synonym "Grandstand area".
-      if (filters.locations.length) {
-        const itemAreas = normalizeAreas(item.location);
-        if (!filters.locations.some((loc) => itemAreas.includes(loc))) return false;
-      }
-
-      if (filters.categories.length && !filters.categories.includes(item.category))
+      if (
+        filters.locations.length &&
+        !splitLocations(item.location).some((l) => filters.locations.includes(l))
+      )
         return false;
 
-      if (filters.statuses.length && !filters.statuses.includes(item.status))
+      if (filters.categories.length && !filters.categories.includes(normalizeCategory(item.category)))
         return false;
 
-      if (filters.types.length && !filters.types.includes(item.type)) return false;
+      if (filters.statuses.length && !filters.statuses.includes(normalizeStatus(item.status)))
+        return false;
+
+      if (filters.types.length && !filters.types.includes(normalizeType(item.type))) return false;
 
       if (filters.dateRange.start || filters.dateRange.end) {
         const itemDate = getItemDate(item);
@@ -835,79 +933,98 @@ export default function Reports() {
 
   // ================= DATA PROCESSING =================
 
-  const lostItems = filteredItems.filter((item) => item.type === "Lost");
+  // Declined reports (rejected by staff as invalid or duplicate) are not real
+  // lost/surrendered items, so they are left out of the counts, rates,
+  // hotspots and categories, unless "Declined" is picked in the Status
+  // filter. The Status chart still shows how many there are.
+  const showDeclined = filters.statuses.includes("Declined");
+  const countsAsRecord = (item) => showDeclined || normalizeStatus(item.status) !== "Declined";
+  const recordItems = filteredItems.filter(countsAsRecord);
+  const declinedLeftOut = filteredItems.length - recordItems.length;
 
-  const surrendered = filteredItems.filter((item) => item.type === "Surrendered");
+  const lostItems = recordItems.filter((item) => normalizeType(item.type) === "Lost");
 
-  const claimed = filteredItems.filter(
-    (item) => item.status === "Claimed" || item.status === "Returned"
-  );
+  const surrendered = recordItems.filter((item) => normalizeType(item.type) === "Surrendered");
 
-  // Recovery rate = resolved items (Claimed/Returned) out of ALL logged
-  // items (Lost reports + Surrendered items), not just Lost reports.
-  // Previously this divided by lostItems.length alone, but `claimed` counts
-  // BOTH Lost items marked Claimed and Surrendered items marked
-  // Claimed/Returned (see LostItems.jsx and FoundItems.jsx — both types can
-  // reach that status). Since claimed can include Surrendered-and-claimed
-  // items that were never counted in lostItems, the old rate could exceed
-  // 100%. Dividing by filteredItems.length instead is mathematically safe:
-  // `claimed` is filtered FROM filteredItems, so it's always a subset of it.
-  const recoveryRate = pct(claimed.length, filteredItems.length);
+  // "Recovered" / "Claimed" means: a LOST report that reached status
+  // Claimed. Restricting to Lost-type items keeps recovered <= lost,
+  // so the recovery percentage can never exceed 100%.
+  // An archived item still counts as recovered if it had been Claimed
+  // before it was archived (status_before_archive); otherwise archiving old
+  // claimed records made the recovery rate drop.
+  const isRecovered = (item) => {
+    const status = normalizeStatus(item.status);
+    if (status === "Archived") return normalizeStatus(item.status_before_archive) === "Claimed";
+    return status === "Claimed";
+  };
 
+  // Lost reports that ended with the owner getting the item back.
+  const recoveredLost = lostItems.filter(isRecovered);
+  // Found (surrendered) items released to their owners.
+  const releasedFound = surrendered.filter(isRecovered);
+  // Every item handed back, from either list (matches the Dashboard).
+  const claimed = [...recoveredLost, ...releasedFound];
+
+  // Recovery rate stays "recovered lost reports / lost reports", so it can
+  // never go above 100%.
+  const recoveryRate = pct(recoveredLost.length, lostItems.length);
+
+  // Location hotspots — a lost report with several areas counts once in each.
   const locations = {};
 
-  filteredItems.forEach((item) => {
-    // Attribute this item to EVERY canonical area it actually belongs to,
-    // instead of using the raw stored string as the bucket key. That's what
-    // was fragmenting the table: a record stored as "Grandstand, Chapel"
-    // was becoming its own single combined row instead of adding one count
-    // to "Grandstand" and one to "Chapel"; legacy synonyms like "Gym" were
-    // showing up as separate rows next to the canonical "Gymnasium".
-    const areas = normalizeAreas(item.location);
-    if (areas.length === 0) return;
+  recordItems.forEach((item) => {
+    const itemType = normalizeType(item.type);
+    if (itemType !== "Lost" && itemType !== "Surrendered") return;
+    const recovered = itemType === "Lost" && isRecovered(item);
 
-    areas.forEach((area) => {
-      if (!locations[area]) locations[area] = { total: 0, lost: 0, recovered: 0 };
-
-      // `total` = every item logged at this location (Lost + Surrendered),
-      // used as the denominator for that location's recovery rate below so
-      // `recovered` (which isn't restricted to Lost-type items) can never
-      // outnumber it.
-      locations[area].total++;
-
-      // `lost` stays specific to Lost-type reports — it's used only for the
-      // risk-level classification (riskLevel), which is about how many
-      // active Lost reports came from a location, not about the rate.
-      if (item.type === "Lost") locations[area].lost++;
-
-      if (item.status === "Claimed" || item.status === "Returned")
-        locations[area].recovered++;
+    splitLocations(item.location).forEach((locKey) => {
+      // With a Location filter on, a report that lists several areas only
+      // counts toward the areas that were picked (the others used to show
+      // up in the table too).
+      if (filters.locations.length && !filters.locations.includes(locKey)) return;
+      if (!locations[locKey]) locations[locKey] = { lost: 0, recovered: 0, surrendered: 0 };
+      if (itemType === "Lost") {
+        locations[locKey].lost++;
+        if (recovered) locations[locKey].recovered++;
+      } else {
+        locations[locKey].surrendered++;
+      }
     });
   });
 
   const areaStats = Object.entries(locations)
     .map(([area, data]) => ({ area, ...data }))
-    .sort((a, b) => b.lost - a.lost);
+    .sort((a, b) => b.lost - a.lost || b.surrendered - a.surrendered);
 
+  // Item Categories — tracked per type (Lost vs Surrendered/Found). Items in
+  // a category that no longer exists (e.g. "Personal", "Valuables") are
+  // skipped here.
   const categories = {};
 
-  filteredItems.forEach((item) => {
-    categories[item.category] = (categories[item.category] || 0) + 1;
+  recordItems.forEach((item) => {
+    const catKey = normalizeCategory(item.category);
+    if (!catKey) return;
+    if (!categories[catKey]) categories[catKey] = { lost: 0, surrendered: 0 };
+    const itemType = normalizeType(item.type);
+    if (itemType === "Lost") categories[catKey].lost++;
+    else if (itemType === "Surrendered") categories[catKey].surrendered++;
   });
 
   const catStats = Object.entries(categories)
-    .map(([cat, count]) => ({ cat, count }))
+    .map(([cat, data]) => ({ cat, ...data, count: data.lost + data.surrendered }))
     .sort((a, b) => b.count - a.count);
 
   const statuses = {};
 
   filteredItems.forEach((item) => {
-    statuses[item.status] = (statuses[item.status] || 0) + 1;
+    const statusKey = normalizeStatus(item.status);
+    if (!statusKey) return;
+    statuses[statusKey] = (statuses[statusKey] || 0) + 1;
   });
 
-  const statusStats = Object.entries(statuses).map(([label, value]) => ({
+  const statusStats = sortByReference(Object.keys(statuses), STATUS_REFERENCE).map((label) => ({
     label,
-    value
+    value: statuses[label]
   }));
 
   const comparisonData = [
@@ -916,9 +1033,31 @@ export default function Reports() {
     { label: "Claimed Items", value: claimed.length }
   ];
 
-  const totalItems = filteredItems.length;
+  const totalItems = recordItems.length;
 
-  const topHotspot = areaStats[0]?.area || "None";
+  // ================= LOST vs FOUND COMPARISON =================
+  // Same Location/Category/Status filters, but NOT the Type filter (it
+  // compares both types) or the date range (the period picker sets it).
+  const comparativeRows = useMemo(() => {
+    const base = items.filter((item) => {
+      if (
+        filters.locations.length &&
+        !splitLocations(item.location).some((l) => filters.locations.includes(l))
+      )
+        return false;
+      if (filters.categories.length && !filters.categories.includes(normalizeCategory(item.category)))
+        return false;
+      if (filters.statuses.length && !filters.statuses.includes(normalizeStatus(item.status)))
+        return false;
+      if (!filters.statuses.includes("Declined") && normalizeStatus(item.status) === "Declined")
+        return false;
+      return true;
+    });
+    return buildComparison(base, compareMode, getItemDate, (item) => normalizeType(item.type), semConfig);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [items, filters.locations, filters.categories, filters.statuses, compareMode, semConfig]);
+
+  const topHotspot = areaStats[0]?.lost > 0 ? areaStats[0].area : "None";
 
   // ================= ACTIVE FILTER CHIPS =================
 
@@ -971,9 +1110,46 @@ export default function Reports() {
     visibility: visible;
   }
 
+  /* The dashboard layout around this page (DashboardLayout.jsx) is a
+     full-screen box with hidden overflow, which cut the printout off
+     after the first page. On paper every box that contains the report
+     grows to fit it instead. */
+  html,
+  body,
+  #root,
+  #root *:has(#print-report) {
+    height: auto !important;
+    min-height: 0 !important;
+    max-height: none !important;
+    overflow: visible !important;
+    display: block !important;
+  }
+
+  /* The on-screen dashboard takes no space on paper (it used to leave
+     blank pages at the end of the printout). */
+  .screen-dashboard {
+    display: none !important;
+  }
+
+  .reports-root {
+    min-height: 0 !important;
+    padding: 0 !important;
+  }
+
+  /* Keep a section's heading together with its table. */
+  .sr-keep {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .sr-heading {
+    break-after: avoid;
+    page-break-after: avoid;
+  }
+
   #print-report {
     display: block !important;
-    position: absolute;
+    position: static;
     top: 0;
     left: 0;
     width: 100% !important;
@@ -1009,34 +1185,92 @@ export default function Reports() {
   .sr-letterhead {
     display: flex;
     align-items: center;
-    gap: 16px;
-    justify-content: center;
-    margin-bottom: 14px;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 0;
+    padding-bottom: 10px;
+    border-bottom: 3px double #1a1a1a;
+  }
+
+  .sr-letterhead-logos-left {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
   }
 
   .sr-logo {
-    width: 56px;
-    height: 56px;
+    width: 50px;
+    height: 50px;
     object-fit: contain;
     flex-shrink: 0;
   }
 
   .sr-letterhead-text {
-    text-align: left;
+    flex: 1;
+    text-align: center;
+    padding: 0 8px;
   }
 
   .sr-school-name {
-    font-size: 18px;
+    font-size: 17px;
     font-weight: 700;
-    color: #4a5c7a;
+    font-family: Georgia, "Times New Roman", serif;
+    color: #1a1a1a;
     margin: 0;
     letter-spacing: 0.3px;
   }
 
   .sr-school-address {
-    font-size: 12px;
+    font-size: 10.5px;
+    font-weight: 600;
+    color: #333;
+    margin: 1px 0 0 0;
+  }
+
+  .sr-office-label {
+    font-size: 9.5px;
     font-weight: 700;
-    color: #5d89ad;
+    color: #2D366D;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    margin: 3px 0 0 0;
+  }
+
+  .sr-letterhead-logos-right {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    flex-shrink: 0;
+  }
+
+  .sr-logo-brand {
+    width: 54px;
+    height: 54px;
+    object-fit: contain;
+  }
+
+  .sr-brandbar {
+    text-align: center;
+    margin: 0 0 16px 0;
+    padding: 8px 0 10px 0;
+    border-bottom: 1px solid #999;
+  }
+
+  .sr-brand-name {
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    color: #2D366D;
+    margin: 0;
+  }
+
+  .sr-brand-tagline {
+    font-size: 8.5px;
+    font-weight: 600;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: #666;
     margin: 2px 0 0 0;
   }
 
@@ -1047,8 +1281,7 @@ export default function Reports() {
     text-transform: uppercase;
     letter-spacing: 0.5px;
     margin: 0 0 16px 0;
-    padding-bottom: 12px;
-    border-bottom: 2px solid #1a1a1a;
+    padding-bottom: 0;
   }
 
   .sr-meta {
@@ -1121,9 +1354,9 @@ export default function Reports() {
       </style>
 
       {/* FULL-SCREEN CONTAINER */}
-      <div className="w-full min-h-screen bg-slate-50/50 p-4 sm:p-6 lg:p-8">
+      <div className="reports-root w-full min-h-screen bg-slate-50/50 p-4 sm:p-6 lg:p-8">
         {/* ON-SCREEN DASHBOARD (hidden on print, replaced by the formal summary below) */}
-        <div className="space-y-6 w-full">
+        <div className="screen-dashboard space-y-6 w-full">
           {/* HEADER */}
           <div className="bg-gradient-to-br from-[#2D366D] to-[#1E254E] rounded-2xl p-8 text-white w-full">
             <h1 className="text-3xl font-black uppercase italic tracking-wide">
@@ -1172,7 +1405,9 @@ export default function Reports() {
               icon={FaAward}
               color="text-indigo-600"
               bgColor="bg-indigo-50"
-              description={`${claimed.length} recovered cases`}
+              description={`${recoveredLost.length} of ${lostItems.length} lost reports recovered${
+                declinedLeftOut > 0 ? ` · ${declinedLeftOut} declined report${declinedLeftOut === 1 ? "" : "s"} not counted` : ""
+              }`}
             />
 
             <StatCard
@@ -1185,7 +1420,7 @@ export default function Reports() {
             />
 
             <StatCard
-              label="Found Items"
+              label="Surrendered Items"
               count={surrendered.length}
               icon={FaCheckCircle}
               color="text-emerald-600"
@@ -1226,26 +1461,46 @@ export default function Reports() {
               <BarChart data={statusStats} />
             </Section>
 
-            {/* CATEGORY REPORT */}
+            {/* CATEGORY REPORT — Lost vs Found per category */}
             <Section title="Item Categories">
               {catStats.length === 0 ? (
                 <EmptyState />
               ) : (
                 <div className="space-y-5">
+                  <div className="flex items-center gap-4 text-[10px] font-black uppercase tracking-wide text-slate-400 mb-1">
+                    <span className="flex items-center gap-1.5">
+                      <span className="w-2.5 h-2.5 rounded-full bg-rose-400 inline-block" />
+                      Lost
+                    </span>
+                    <span className="flex items-center gap-1.5">
+                      <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 inline-block" />
+                      Surrendered
+                    </span>
+                  </div>
+
                   {catStats.map((cat, index) => (
                     <div key={index}>
                       <div className="flex justify-between text-xs font-bold mb-2 text-slate-600">
                         <span>{cat.cat}</span>
-                        <span>{cat.count}</span>
+                        <span className="text-slate-400 font-semibold">
+                          {cat.lost} lost · {cat.surrendered} surrendered
+                        </span>
                       </div>
 
-                      <HBar value={cat.count} max={totalItems} />
+                      <StackedHBar lost={cat.lost} found={cat.surrendered} total={cat.count} />
                     </div>
                   ))}
                 </div>
               )}
             </Section>
           </div>
+
+          {/* LOST vs SURRENDERED COMPARATIVE REPORT — just above Location Hotspots */}
+          <ComparativeReport
+            rows={comparativeRows}
+            mode={compareMode}
+            onModeChange={setCompareMode}
+          />
 
           {/* LOCATION TABLE */}
           <div className="bg-white rounded-2xl border border-slate-200/70 overflow-hidden print-section w-full">
@@ -1266,19 +1521,14 @@ export default function Reports() {
                     <tr>
                       <th className="p-4 text-left">Location</th>
                       <th className="p-4 text-center">Lost</th>
+                      <th className="p-4 text-center">Surrendered</th>
                       <th className="p-4 text-center">Recovered</th>
-                      <th className="p-4 text-center">Rate</th>
                       <th className="p-4 text-center">Risk</th>
                     </tr>
                   </thead>
 
                   <tbody>
                     {areaStats.map((area, index) => {
-                      // Rate = recovered out of ALL items logged at this
-                      // location (area.total), not just Lost-type reports
-                      // (area.lost) — recovered items aren't restricted to
-                      // Lost type, so dividing by area.lost could exceed 100%.
-                      const rate = pct(area.recovered, area.total);
                       const risk = riskLevel(area.lost);
 
                       return (
@@ -1288,11 +1538,11 @@ export default function Reports() {
                           <td className="p-4 text-center">{area.lost}</td>
 
                           <td className="p-4 text-center text-emerald-600 font-bold">
-                            {area.recovered}
+                            {area.surrendered}
                           </td>
 
-                          <td className={`p-4 text-center font-black ${pctColor(rate)}`}>
-                            {rate}%
+                          <td className="p-4 text-center text-emerald-600 font-bold">
+                            {area.recovered}
                           </td>
 
                           <td className="p-4 text-center">
@@ -1321,13 +1571,18 @@ export default function Reports() {
             lostItems={lostItems}
             surrendered={surrendered}
             claimed={claimed}
+            recoveredLost={recoveredLost}
+            releasedFound={releasedFound}
             recoveryRate={recoveryRate}
             areaStats={areaStats}
             catStats={catStats}
             statusStats={statusStats}
+            declinedLeftOut={declinedLeftOut}
             topHotspot={topHotspot}
             activeChips={activeChips}
             filters={filters}
+            comparativeRows={comparativeRows}
+            comparativeMode={compareMode}
           />
         </div>
       </div>

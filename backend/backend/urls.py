@@ -14,10 +14,13 @@ Including another URLconf
     1. Import the include() function: from django.urls import include, path
     2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
 """
+import os
+
 from django.contrib import admin
-from django.urls import path, include
+from django.urls import path, re_path, include
 from django.conf import settings
 from django.conf.urls.static import static
+from django.views.static import serve
 
 urlpatterns = [
     path("admin/", admin.site.urls),
@@ -26,8 +29,20 @@ urlpatterns = [
     path("claim/", include("claim.urls")),
     path("notification/", include("notification.urls")),
     path("gamification/", include("gamification.urls")),
+    path("questions/", include("questions.urls")),
+    path("report-issue/", include("report_issue.urls")),
+    path("alerts/", include("alerts.urls")),
+    path("support/", include("support.urls")),
+    path("activity/", include("activity.urls")),
 ]
 
 if settings.DEBUG:
+    # Local development: Django serves uploaded files
     urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
-
+elif os.environ.get("SERVE_MEDIA", "False").lower() == "true":
+    # Production fallback for hosts without a web-server media mapping
+    # (Render/Railway). Set SERVE_MEDIA=True in the server's .env.
+    # Not needed on PythonAnywhere — use a /media/ static mapping there instead.
+    urlpatterns += [
+        re_path(r"^media/(?P<path>.*)$", serve, {"document_root": settings.MEDIA_ROOT}),
+    ]

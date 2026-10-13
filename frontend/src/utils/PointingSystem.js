@@ -1,9 +1,11 @@
 // utils/pointsSystem.js
 // Category points reward the item type; action points reward the workflow
-// step (report / surrender / claim). Total = category + action, stacked.
-// Note: "Surrender to SAO" is treated the same as "Report found item" — both
-// score +8 — since surrendering IS the act of reporting a found item for
-// walk-in cases (FoundItems.jsx), not a separate bonus on top of it.
+// step. Total = category + action, stacked.
+//
+// Only ONE action constant exists for the report/surrender step —
+// SURRENDER_ITEM — since a walk-in surrender IS the report for this flow.
+// (REPORT_ITEM was removed: it duplicated SURRENDER_ITEM's value and was
+// never actually referenced anywhere in FoundItems.jsx.)
 
 export const CATEGORY_POINTS = {
   'Electronic': 5,          // Electronics
@@ -16,13 +18,11 @@ export const CATEGORY_POINTS = {
 };
 
 export const ACTION_POINTS = {
-  REPORT_ITEM: 8,     // Report found item
-  SURRENDER_ITEM: 8,  // Surrender to SAO — same value as reporting
-  ITEM_CLAIMED: 4,    // Found item successfully claimed by its rightful owner
+  SURRENDER_ITEM: 4,  // Report / surrender found item
+  ITEM_CLAIMED: 8,    // Found item successfully claimed by its rightful owner
 };
 
 export const REASON_LABELS = {
-  REPORT_ITEM: 'Reported found item',
   SURRENDER_ITEM: 'Surrendered item',
   ITEM_CLAIMED: 'Item claimed by owner',
 };

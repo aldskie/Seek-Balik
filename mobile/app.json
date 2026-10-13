@@ -1,0 +1,50 @@
+{
+  "expo": {
+    "name": "Seek & Balik",
+    "slug": "mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/image/icon.png",
+    "userInterfaceStyle": "automatic",
+    "updates": {
+      "enabled": false
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.seekandbalik.mobile"
+    },
+    "android": {
+      "package": "com.seekandbalik.mobile",
+      "versionCode": 1,
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/image/adaptive-icon.png",
+        "backgroundColor": "#ffffff"
+      }
+    },
+    "web": {
+      "favicon": "./assets/image/favicon.png"
+    },
+    "plugins": [
+      "expo-font",
+      "@react-native-community/datetimepicker",
+      "expo-secure-store",
+      "expo-status-bar",
+      "expo-asset",
+      "expo-notifications",
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Allow Seek & Balik to use your location to guide you to the Lost & Found Desk."
+        }
+      ],
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/image/splash-icon.png",
+          "backgroundColor": "#ffffff",
+          "imageWidth": 200
+        }
+      ]
+    ]
+  }
+}

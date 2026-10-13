@@ -6,6 +6,7 @@ from .views import (
     item_details,
     track_item,
     verify_answers,
+    get_my_items,
 )
 
 urlpatterns = [
@@ -14,4 +15,5 @@ urlpatterns = [
     path("details/<int:pk>/", item_details),
     path("track/<str:ticket_code>/", track_item),
     path("verify-answers/<int:pk>/", verify_answers),
+    path("mine/", get_my_items),
 ]

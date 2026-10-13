@@ -14,22 +14,26 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 # Initialize django-environ
 env = environ.Env(
-    DEBUG=(bool, True)  # Default to True for development safety
+    DEBUG=(bool, True)  # Default to True for local development
 )
 
-# Read .env file located at parent directory level
+# Read .env file located at parent directory level (the monorepo root, e.g. LF/.env)
 environ.Env.read_env(os.path.join(BASE_DIR.parent, '.env'))
 
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = env('SECRET_KEY', default='django-insecure-fallback-key-replace-me')
 
 # SECURITY WARNING: don't run with debug turned on in production!
+# Set DEBUG=False in the server's .env
 DEBUG = env.bool('DEBUG', default=True)
 
 # Hosts configuration
-# Ensures allowed hosts is never empty even when DEBUG=False
-parsed_hosts = env.list('ALLOWED_HOSTS', default=['*'])
-ALLOWED_HOSTS = parsed_hosts if parsed_hosts else ['localhost', '127.0.0.1', '*']
+# Local: defaults allow everything. Production: set ALLOWED_HOSTS in .env
+# e.g. ALLOWED_HOSTS=seekandbalik.pythonanywhere.com
+if DEBUG:
+    ALLOWED_HOSTS = env.list('ALLOWED_HOSTS', default=['*'])
+else:
+    ALLOWED_HOSTS = env.list('ALLOWED_HOSTS', default=['localhost', '127.0.0.1'])
 
 TIME_ZONE = 'Asia/Manila'
 USE_TZ = True
@@ -54,6 +58,11 @@ INSTALLED_APPS = [
     'claim',
     'notification',
     'gamification',
+    'questions',
+    'report_issue',
+    'alerts',
+    'support',
+    'activity',
 ]
 
 AUTH_USER_MODEL = 'account.Account'
@@ -70,6 +79,7 @@ SIMPLE_JWT = {
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',  # serves static files in production
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -80,22 +90,27 @@ MIDDLEWARE = [
 
 ROOT_URLCONF = 'backend.urls'
 
-CORS_ALLOWED_ORIGINS = [
+# CORS / CSRF
+# Local defaults are kept. In production, set these in .env to your website URL, e.g.
+# CORS_ALLOWED_ORIGINS=https://seekandbalik.vercel.app
+# CSRF_TRUSTED_ORIGINS=https://seekandbalik.vercel.app,https://seekandbalik.pythonanywhere.com
+CORS_ALLOWED_ORIGINS = env.list('CORS_ALLOWED_ORIGINS', default=[
     "http://localhost:5173",
     "http://127.0.0.1:5173",
     "http://192.168.1.204:5173",
     "http://localhost:3000",
     "http://localhost:5174",
-]
+])
 
-CSRF_TRUSTED_ORIGINS = [
+CSRF_TRUSTED_ORIGINS = env.list('CSRF_TRUSTED_ORIGINS', default=[
     "http://localhost:5173",
     "http://127.0.0.1:5173",
     "http://localhost:3000",
     "http://localhost:5174",
-]
+])
 
-CORS_ALLOW_ALL_ORIGINS = True
+# Allow all origins only while developing; production uses the list above
+CORS_ALLOW_ALL_ORIGINS = env.bool('CORS_ALLOW_ALL_ORIGINS', default=DEBUG)
 CORS_ALLOW_CREDENTIALS = True
 
 TEMPLATES = [
@@ -122,10 +137,12 @@ if USE_SQLITE:
     DATABASES = {
         'default': {
             'ENGINE': 'django.db.backends.sqlite3',
-            'NAME': BASE_DIR / 'db.sqlite3',
+            # SQLITE_PATH lets you put the DB on a persistent disk (Render/Railway)
+            'NAME': env('SQLITE_PATH', default=str(BASE_DIR / 'db.sqlite3')),
         }
     }
 else:
+    # Requires psycopg2-binary in requirements.txt
     DATABASES = {
         'default': {
             'ENGINE': 'django.db.backends.postgresql',
@@ -157,19 +174,54 @@ AUTH_PASSWORD_VALIDATORS = [
 LANGUAGE_CODE = 'en-us'
 USE_I18N = True
 
+# Static files (admin CSS/JS etc.) — collected with: python manage.py collectstatic
 STATIC_URL = 'static/'
+STATIC_ROOT = BASE_DIR / 'staticfiles'
+
+# Uploaded files (item photos etc.)
+MEDIA_URL = '/media/'
+MEDIA_ROOT = Path(env('MEDIA_ROOT', default=str(BASE_DIR / 'media')))
+
+STORAGES = {
+    'default': {
+        'BACKEND': 'django.core.files.storage.FileSystemStorage',
+    },
+    'staticfiles': {
+        'BACKEND': 'whitenoise.storage.CompressedStaticFilesStorage',
+    },
+}
 
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
-        'rest_framework_simplejwt.authentication.JWTAuthentication',
+        # JWT login + forced temporary-password change (account/authentication.py)
+        'account.authentication.TemporaryPasswordJWTAuthentication',
     ),
 }
 
-MEDIA_URL = '/media/'
-MEDIA_ROOT = BASE_DIR / "media"
+# Production security (only active when DEBUG=False)
+if not DEBUG:
+    # Hosting platforms terminate HTTPS before Django; this tells Django the request was HTTPS
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+    SECURE_SSL_REDIRECT = env.bool('SECURE_SSL_REDIRECT', default=True)
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
 
-# Email Configuration
-EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+# ==========================================================
+# EMAIL
+#
+# Brevo (formerly Sendinblue) transactional email API. Get an API key from
+# Brevo > SMTP & API > API Keys, and make sure BREVO_SENDER_EMAIL is a
+# verified sender in your Brevo account. Also used directly by
+# backend/email_utils.py for admin-triggered emails.
+#
+# When BREVO_API_KEY is set, EVERY email Django sends (all send_mail()
+# calls in the apps) goes through Brevo's HTTPS API using
+# backend/brevo_backend.py. This is required on PythonAnywhere's free plan,
+# which blocks SMTP. Without BREVO_API_KEY, Gmail SMTP below is used
+# instead (works locally only).
+# ==========================================================
+BREVO_API_KEY = env('BREVO_API_KEY', default='')
+
 EMAIL_HOST = 'smtp.gmail.com'
 EMAIL_PORT = 587
 EMAIL_USE_TLS = True
@@ -177,14 +229,14 @@ EMAIL_HOST_USER = env('EMAIL_HOST_USER', default='seekandbalik@gmail.com')
 
 # IMPORTANT: EMAIL_HOST_PASSWORD must be a 16-character Google App Password 
 # generated from Google Account > Security > 2-Step Verification > App passwords
+# (only needed when BREVO_API_KEY is not set)
 EMAIL_HOST_PASSWORD = env('EMAIL_HOST_PASSWORD', default='')
 DEFAULT_FROM_EMAIL = EMAIL_HOST_USER
 
-# Brevo (formerly Sendinblue) transactional email API.
-# Used instead of the SMTP backend above for admin-triggered emails
-# (e.g. "Create User & Send Email" on the admin Users page) — see
-# backend/email_utils.py. Get an API key from Brevo > SMTP & API > API Keys,
-# and make sure BREVO_SENDER_EMAIL is a verified sender in your Brevo account.
-BREVO_API_KEY = env('BREVO_API_KEY', default='')
 BREVO_SENDER_EMAIL = env('BREVO_SENDER_EMAIL', default=EMAIL_HOST_USER)
 BREVO_SENDER_NAME = env('BREVO_SENDER_NAME', default='SLC Seek & Balik')
+
+if BREVO_API_KEY:
+    EMAIL_BACKEND = 'backend.brevo_backend.BrevoEmailBackend'
+else:
+    EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'

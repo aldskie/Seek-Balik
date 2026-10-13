@@ -1,223 +1,268 @@
-import json
-import random
+import copy
 
 from rest_framework import serializers
-# pyrefly: ignore [missing-import]
-from .models import ItemDetails, ItemImage
+from .models import ItemDetails
 
+# Older frontend code may still send the finder under these keys; all are
+# mapped onto `student_id`. Keeping 'id_number' here means anything not yet
+# updated to the new name keeps working.
+LEGACY_ID_KEYS = ('id_number', 'student', 'finder')
 
-# Generic decoy text used to pad multiple-choice verification options when
-# there aren't enough other items in the same category to draw real decoy
-# answers from. Kept vague on purpose so it never accidentally reads as a
-# plausible real answer.
-_GENERIC_DECOYS = [
-    "None of the above",
-    "I'm not sure",
-    "Not applicable",
-    "Can't recall",
-]
+# Old field names the frontend may still send -> new database fields.
+LEGACY_DATE_KEYS = {
+    'created_date': 'start_date',
+    'created_time': 'start_time',
+}
+
+# The Lost/Found forms send the END of the date/time range as
+# created_date_to / created_time_to -> stored in end_date / end_time.
+# Unlike the start keys, a blank value here is kept (it clears the end).
+LEGACY_RANGE_END_KEYS = {
+    'created_date_to': 'end_date',
+    'created_time_to': 'end_time',
+}
+
+# Optional range-end fields: a blank value means "no end".
+OPTIONAL_RANGE_KEYS = ('end_date', 'end_time')
+
+# FormData turns a JS null/undefined into these strings.
+EMPTY_VALUES = ('', 'none', 'null', 'undefined')
+
+# Roles allowed to see the correct verification answers. Adjust to match
+# the role values your Account model actually uses.
+STAFF_ROLES = ('admin', 'moderator', 'staff')
 
 
 def _is_staff_request(request):
-    """
-    True only for authenticated Admin/Moderator accounts (same rule as
-    claim.permissions.IsStaffMember). Everyone else — anonymous claimants
-    on the public landing page included — is treated as public.
-    """
-    if request is None:
-        return False
     user = getattr(request, 'user', None)
-    return bool(
-        user
-        and getattr(user, 'is_authenticated', False)
-        and getattr(user, 'role', None) in ('admin', 'moderator')
-    )
+    if not user or not user.is_authenticated:
+        return False
+    if getattr(user, 'is_staff', False) or getattr(user, 'is_superuser', False):
+        return True
+    return str(getattr(user, 'role', '') or '').lower() in STAFF_ROLES
 
 
-class ItemImageSerializer(serializers.ModelSerializer):
-    image = serializers.SerializerMethodField()
+def _request_user_student_id(request):
+    """Digits from the logged-in user's email/username local part, or ''."""
+    user = getattr(request, 'user', None)
+    if not user or not user.is_authenticated:
+        return ''
+    for value in (getattr(user, 'email', ''), getattr(user, 'username', '')):
+        local = (value or '').split('@')[0]
+        digits = ''.join(ch for ch in local if ch.isdigit())
+        if digits:
+            return digits
+    return ''
 
-    class Meta:
-        model = ItemImage
-        fields = ['id', 'image']
 
-    def get_image(self, obj):
-        if not obj.image:
-            return None
-        request = self.context.get('request')
-        return request.build_absolute_uri(obj.image.url) if request else obj.image.url
+# Hidden from anyone who isn't staff or the item's own reporter/finder:
+# the finder's / reporter's details, and the name, contact number and email
+# of whoever received the item.
+PRIVATE_ITEM_FIELDS = (
+    'email',
+    'student_id',
+    'poster_name',
+    'claimed_by_name',
+    'claimed_by_email',
+    'claimed_by_contact',
+    'released_by',
+    'declined_remarks',
+)
 
 
 class ItemSerializers(serializers.ModelSerializer):
-    other_location = serializers.CharField(
-        required=False,
-        allow_blank=True,
-        write_only=True
-    )
+    """
+    `student_id` is a plain 8-digit CharField on ItemDetails (validated by
+    the model's student_id_validator), not a link to an Account.
 
-    images = ItemImageSerializer(many=True, read_only=True)
+    `is_mine` is True when the logged-in user is the finder who turned this
+    surrendered item in (matched by Student ID or by the item's email).
+    """
 
-    created_time = serializers.TimeField(
-        format='%I:%M %p',
-        input_formats=['%H:%M', '%I:%M %p']
-    )
+    is_mine = serializers.SerializerMethodField()
 
     class Meta:
         model = ItemDetails
         fields = '__all__'
-        extra_kwargs = {
-            'created_time': {'format': '%H:%M'}
-        }
+
+    def get_is_mine(self, obj):
+        if obj.type != 'Surrendered':
+            return False
+
+        request = self.context.get('request')
+        user = getattr(request, 'user', None)
+        if not user or not user.is_authenticated:
+            return False
+
+        my_id = _request_user_student_id(request)
+        item_digits = ''.join(ch for ch in (obj.student_id or '') if ch.isdigit())
+        if my_id and item_digits and my_id == item_digits:
+            return True
+
+        my_email = (getattr(user, 'email', '') or '').strip().lower()
+        item_email = (obj.email or '').strip().lower()
+        return bool(my_email) and my_email == item_email
+
+    def to_internal_value(self, data):
+        # Shallow copy so the keys below can be edited. NOT data.copy():
+        # for a multipart request that's a QueryDict, whose .copy() is a
+        # DEEP copy - and deep-copying a large uploaded photo (stored as a
+        # temp file) raises "cannot pickle '_io.BufferedRandom' object".
+        # copy.copy() gives a mutable copy that shares the file objects.
+        data = copy.copy(data)
+
+        # Legacy keys -> student_id (only if student_id wasn't sent itself).
+        for key in LEGACY_ID_KEYS:
+            if key in data:
+                legacy = data.get(key)
+                del data[key]
+                if 'student_id' not in data:
+                    data['student_id'] = legacy
+
+        # created_date / created_time -> start_date / start_time.
+        # Edit forms built from an API response send BOTH names, but only
+        # the old name is bound to the form input, so when both are sent
+        # the old-name value wins (it is the one the user may have edited).
+        for old_key, new_key in LEGACY_DATE_KEYS.items():
+            if old_key in data:
+                legacy = data.get(old_key)
+                del data[old_key]
+                if str(legacy or '').strip().lower() not in EMPTY_VALUES:
+                    data[new_key] = legacy
+
+        # created_date_to / created_time_to -> end_date / end_time. When an
+        # edit form sends both names, the _to value wins (it is the one
+        # bound to the End Date / End Time inputs).
+        for old_key, new_key in LEGACY_RANGE_END_KEYS.items():
+            if old_key in data:
+                legacy = data.get(old_key)
+                del data[old_key]
+                data[new_key] = legacy
+
+        # "Returned" was removed (it meant the same as "Claimed"). Old
+        # backups being restored may still send it.
+        for key in ('status', 'status_before_archive'):
+            if str(data.get(key) or '').strip().lower() == 'returned':
+                data[key] = 'Claimed'
+
+        # Photos are saved as ItemImage rows by the views (up to 3), and the
+        # `image` cover field is synced from them, so uploaded files are
+        # never written to `image` directly here.
+        if 'image' in data:
+            del data['image']
+
+        # Blank end date/time from a form clears the value instead of
+        # failing date/time parsing.
+        for key in OPTIONAL_RANGE_KEYS:
+            if key in data and str(data.get(key) or '').strip().lower() in EMPTY_VALUES:
+                data[key] = None
+
+        if 'student_id' in data:
+            raw = str(data.get('student_id') or '').strip()
+            if '@' in raw:
+                # Accept 12345678@slc-sflu.edu.ph and keep just the digits.
+                raw = raw.split('@', 1)[0].strip()
+
+            if raw.lower() in EMPTY_VALUES:
+                # Blank means "not provided": leaves the default on create
+                # and the existing value untouched on update.
+                del data['student_id']
+            else:
+                data['student_id'] = raw
+
+        return super().to_internal_value(data)
 
     def validate(self, attrs):
-        location = attrs.get('location', '').strip()
-        other_location = attrs.pop('other_location', '').strip()
+        # A surrendered item needs the finder's Student ID when it is
+        # created, otherwise no points can be awarded. Delete this block if
+        # staff may log surrendered items without one.
+        if self.instance is None:
+            item_type = attrs.get('type', 'Lost')
+            if item_type == 'Surrendered' and not attrs.get('student_id'):
+                raise serializers.ValidationError(
+                    {'student_id': 'Student ID is required for surrendered items.'}
+                )
 
-        if location == 'Others':
-            if not other_location:
-                raise serializers.ValidationError({
-                    'other_location': 'Please specify the location.'
-                })
+        # The end of the lost/found range can't be before its start.
+        def current(field):
+            if field in attrs:
+                return attrs[field]
+            return getattr(self.instance, field, None) if self.instance else None
 
-            attrs['location'] = other_location
+        start_date, start_time = current('start_date'), current('start_time')
+        end_date, end_time = current('end_date'), current('end_time')
 
-        elif other_location:
-            raise serializers.ValidationError({
-                'other_location': 'Only fill this when location is Others.'
-            })
-
-        for n in range(1, 5):
-            q_key = f'verification_question_{n}'
-            a_key = f'verification_answer_{n}'
-
-            q_val = attrs.get(q_key, getattr(self.instance, q_key, '') if self.instance else '')
-            a_val = attrs.get(a_key, getattr(self.instance, a_key, '') if self.instance else '')
-            q_val = (q_val or '').strip()
-            a_val = (a_val or '').strip()
-
-            if q_val and not a_val:
-                raise serializers.ValidationError({
-                    a_key: f'Please provide the correct answer for question {n}.'
-                })
-
-            if a_val and not q_val:
-                raise serializers.ValidationError({
-                    q_key: f'Please provide the question text for answer {n}.'
-                })
-
+        if end_time and not end_date:
+            raise serializers.ValidationError(
+                {'end_date': 'Enter an end date when an end time is given.'}
+            )
+        if start_date and end_date:
+            if end_date < start_date:
+                raise serializers.ValidationError(
+                    {'end_date': 'End date cannot be before the start date.'}
+                )
+            if end_date == start_date and start_time and end_time and end_time < start_time:
+                raise serializers.ValidationError(
+                    {'end_time': 'End time cannot be before the start time on the same day.'}
+                )
         return attrs
 
-    def _build_verification_options(self, instance, n):
-        """
-        LEGACY FALLBACK ONLY (used by _resolve_verification_options below
-        when an item has no verification_options_N stored). Build a
-        shuffled multiple-choice option list for verification question
-        `n`: the real answer plus up to 3 decoys, pulled from other
-        items' real answers in the same category, padded with generic
-        filler if there aren't enough.
-        """
-        answer = (getattr(instance, f'verification_answer_{n}') or '').strip()
-        if not answer:
-            return None
-
-        pool = list(
-            ItemDetails.objects
-            .filter(category=instance.category)
-            .exclude(pk=instance.pk)
-            .exclude(**{f'verification_answer_{n}': ''})
-            .values_list(f'verification_answer_{n}', flat=True)
-        )
-
-        seen = {answer.strip().lower()}
-        decoys = []
-        random.shuffle(pool)
-        for candidate in pool:
-            candidate = (candidate or '').strip()
-            key = candidate.lower()
-            if not candidate or key in seen:
-                continue
-            seen.add(key)
-            decoys.append(candidate)
-            if len(decoys) == 3:
-                break
-
-        if len(decoys) < 3:
-            filler = [d for d in _GENERIC_DECOYS if d.lower() not in seen]
-            random.shuffle(filler)
-            decoys.extend(filler[: 3 - len(decoys)])
-
-        options = [answer] + decoys
-        random.shuffle(options)
-        return options
-
-    def _resolve_verification_options(self, instance, n):
-        """
-        Returns the multiple-choice option list the Claim Modal dropdown
-        should show for verification question `n`, or None if this
-        question has no answer set (nothing to grade against / no
-        dropdown should render).
-
-        Prefers the full predefined list the admin/moderator actually
-        configured (verification_options_N, stored as a JSON string —
-        this already contains the correct answer as one of its entries).
-        Falls back to the old sibling-answer decoy-building only for
-        legacy items that predate this field / have nothing stored.
-        """
-        answer = (getattr(instance, f'verification_answer_{n}') or '').strip()
-        if not answer:
-            return None
-
-        raw_stored = (getattr(instance, f'verification_options_{n}') or '').strip()
-        if raw_stored:
-            try:
-                stored = json.loads(raw_stored)
-            except (TypeError, ValueError):
-                stored = None
-
-            if isinstance(stored, list):
-                seen = set()
-                options = []
-                for opt in stored:
-                    if not isinstance(opt, str):
-                        continue
-                    opt = opt.strip()
-                    key = opt.lower()
-                    if opt and key not in seen:
-                        seen.add(opt)
-                        options.append(opt)
-
-                if options:
-                    if answer.lower() not in seen:
-                        options.append(answer)
-                    random.shuffle(options)
-                    return options
-
-        # Legacy fallback: no predefined list stored for this question —
-        # build decoys from other items' answers in the same category.
-        return self._build_verification_options(instance, n)
-
     def to_representation(self, instance):
-        """Convert image field(s) to full URLs in responses"""
         data = super().to_representation(instance)
 
-        if instance.image:
-            request = self.context.get('request')
-            data['image'] = request.build_absolute_uri(instance.image.url) if request else instance.image.url
+        # Old names kept in responses so frontend pages that still read
+        # created_date / created_time keep working.
+        data['created_date'] = data.get('start_date')
+        data['created_time'] = data.get('start_time')
+        # End of the date/time range, under the names the forms use.
+        data['created_date_to'] = data.get('end_date')
+        data['created_time_to'] = data.get('end_time')
 
-        if not data.get('images') and instance.image:
-            data['images'] = [{'id': None, 'image': data['image']}]
-
-        # ------------------------------------------------------------
-        # OWNERSHIP VERIFICATION ANSWERS — never leak these to the public.
-        # ------------------------------------------------------------
+        # All 1-3 photos, oldest first: [{"id": 5, "image": "<url>"}, ...]
+        # `image` stays the first photo for pages that show a single one.
         request = self.context.get('request')
-        if not _is_staff_request(request):
+        photos = []
+        for photo in instance.images.all().order_by('id'):
+            if not photo.image:
+                continue
+            url = photo.image.url
+            if request is not None:
+                url = request.build_absolute_uri(url)
+            photos.append({'id': photo.id, 'image': url})
+        data['images'] = photos
+        if photos:
+            data['image'] = photos[0]['image']
+
+        # The correct answers must never reach non-staff API responses.
+        # verify_answers() grades against the model directly, so the
+        # Claim Modal still works without seeing them.
+        if not _is_staff_request(self.context.get('request')):
             for n in range(1, 5):
                 data.pop(f'verification_answer_{n}', None)
-                options = self._resolve_verification_options(instance, n)
-                if options is not None:
-                    data[f'verification_options_{n}'] = options
-                else:
-                    data.pop(f'verification_options_{n}', None)
+
+            # Personal details are for staff and the item's own reporter /
+            # finder only, not for everyone browsing the public board.
+            if not self._is_own_item(instance):
+                for key in PRIVATE_ITEM_FIELDS:
+                    data.pop(key, None)
+                # A surrendered item's description is the staff-only note
+                # used to check ownership answers; claimants must not see it.
+                if instance.type == 'Surrendered':
+                    data['description'] = ''
 
         return data
+
+    def _is_own_item(self, obj):
+        """True when the logged-in user reported (Lost) or turned in
+        (Surrendered) this item, matched by Student ID or email."""
+        request = self.context.get('request')
+        user = getattr(request, 'user', None)
+        if not user or not user.is_authenticated:
+            return False
+        my_id = _request_user_student_id(request)
+        item_digits = ''.join(ch for ch in (obj.student_id or '') if ch.isdigit())
+        if my_id and item_digits and my_id == item_digits:
+            return True
+        my_email = (getattr(user, 'email', '') or '').strip().lower()
+        item_email = (obj.email or '').strip().lower()
+        return bool(my_email) and my_email == item_email

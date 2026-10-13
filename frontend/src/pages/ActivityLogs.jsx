@@ -9,19 +9,33 @@ import {
   HandHeart,
   CalendarClock,
   Activity,
-  ChevronLeft,
-  ChevronRight,
   User,
   UserPlus,
   UserX,
   UserCheck,
   Archive,
   Filter,
+  Search,
+  RotateCcw,
+  ShieldCheck,
 } from 'lucide-react';
-import { getActivityLogsLocal, ACTIVITY_LOG_UPDATE_EVENT } from '../utils/activityLog';
+import {
+  getActivityLogs,
+  ACTIVITY_LOG_UPDATE_EVENT,
+  isStaffLog,
+} from '../utils/Activitylog';
+import Pagination from "../components/Pagination";
 
-const getActivityLogs = getActivityLogsLocal;
+// Logs come from the server (utils/Activitylog.js -> backend "activity").
 
+// NOTE: badgeStyle used to carry bg-*/text-*/border-* classes together,
+// back when the Action column rendered as a bordered/filled pill. The
+// Action cell no longer renders that box (see the table body below) —
+// only the "text-*" class from each entry is pulled out and used, via
+// actionTextClass() below. badgeStyle is kept as-is (rather than
+// trimmed down to just a color) so nothing else that may reference it
+// breaks, and so re-introducing the boxed look later is a one-line
+// change in the table body, not a data migration.
 const ACTION_META = {
   created: {
     label: 'Created',
@@ -74,22 +88,22 @@ const ACTION_META = {
     badgeStyle: 'bg-slate-100 text-slate-700 border-slate-200',
   },
   updated_found: {
-    label: 'Found Item Updated',
+    label: 'Surrendered Item Updated',
     icon: Pencil,
     badgeStyle: 'bg-slate-100 text-slate-700 border-slate-200',
   },
   edited_found: {
-    label: 'Found Item Edited',
+    label: 'Surrendered Item Edited',
     icon: Pencil,
     badgeStyle: 'bg-slate-100 text-slate-700 border-slate-200',
   },
   found_updated: {
-    label: 'Found Item Updated',
+    label: 'Surrendered Item Updated',
     icon: Pencil,
     badgeStyle: 'bg-slate-100 text-slate-700 border-slate-200',
   },
   found_edited: {
-    label: 'Found Item Edited',
+    label: 'Surrendered Item Edited',
     icon: Pencil,
     badgeStyle: 'bg-slate-100 text-slate-700 border-slate-200',
   },
@@ -124,7 +138,7 @@ const ACTION_META = {
     badgeStyle: 'bg-amber-50 text-amber-700 border-amber-200/80',
   },
   found_archived: {
-    label: 'Found Archived',
+    label: 'Surrendered Item Archived',
     icon: Archive,
     badgeStyle: 'bg-amber-50 text-amber-700 border-amber-200/80',
   },
@@ -158,6 +172,25 @@ const ACTION_META = {
     icon: UserX,
     badgeStyle: 'bg-amber-50 text-amber-700 border-amber-200/80',
   },
+  restored: {
+    label: 'Restored',
+    icon: RotateCcw,
+    badgeStyle: 'bg-emerald-50 text-emerald-700 border-emerald-200/80',
+  },
+};
+
+// Role chip shown under "Performed By".
+const ROLE_STYLE = {
+  admin: 'bg-[#0B6B8A]/10 text-[#0B6B8A] border-[#0B6B8A]/20',
+  moderator: 'bg-violet-50 text-violet-700 border-violet-200',
+};
+
+const roleOf = (log) => (log.performed_by_role || log.actor_role || '').toLowerCase();
+
+const isToday = (dateInput) => {
+  const d = new Date(dateInput);
+  if (isNaN(d.getTime())) return false;
+  return d.toDateString() === new Date().toDateString();
 };
 
 const actionMeta = (action) =>
@@ -166,6 +199,28 @@ const actionMeta = (action) =>
     icon: Activity,
     badgeStyle: 'bg-slate-100 text-slate-700 border-slate-200',
   };
+
+// Some archive events were saved with action "deleted" but their details
+// say "Archived ...". Show those as Archived (amber + archive icon).
+// Works at display time, so old rows are fixed too.
+const getLogMeta = (log) => {
+  const action = (log.action || '').toLowerCase();
+  const details = (log.details || '').toLowerCase();
+
+  if (action === 'deleted' && details.includes('archiv')) {
+    return ACTION_META.archived;
+  }
+  return actionMeta(log.action);
+};
+
+// Pulls just the "text-*" color class(es) out of a badgeStyle string,
+// so the Action cell can color-code the icon/word without the
+// bg-*/border-* classes that used to draw the pill/box around it.
+const actionTextClass = (badgeStyle) =>
+  (badgeStyle || '')
+    .split(' ')
+    .filter((cls) => cls.startsWith('text-'))
+    .join(' ');
 
 function formatRelativeTime(dateInput) {
   if (!dateInput) return '-';
@@ -205,6 +260,8 @@ function formatExactTime(dateInput) {
 const ActivityLogs = () => {
   const [logs, setLogs] = useState([]);
   const [filter, setFilter] = useState('ALL');
+  const [roleFilter, setRoleFilter] = useState('ALL');
+  const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
   const [currentPage, setCurrentPage] = useState(1);
 
@@ -239,16 +296,44 @@ const ActivityLogs = () => {
     }
   }
 
+  // Matches FoundItems.jsx / LostItems.jsx: smooth-scrolls the table back
+  // to the top on every page change.
   const goToPage = (page) => {
     setCurrentPage(page);
-    if (listContainerRef.current) {
-      listContainerRef.current.scrollTo({ top: 0, behavior: 'smooth' });
-    }
+    listContainerRef.current?.scrollTo({
+      top: 0,
+      behavior: 'smooth',
+    });
   };
 
+  // Only admin / moderator activity is shown.
+  const staffLogs = useMemo(() => logs.filter(isStaffLog), [logs]);
+
+  const stats = useMemo(
+    () => ({
+      total: staffLogs.length,
+      today: staffLogs.filter((l) => isToday(l.created_at)).length,
+      admin: staffLogs.filter((l) => roleOf(l) === 'admin').length,
+      moderator: staffLogs.filter((l) => roleOf(l) === 'moderator').length,
+    }),
+    [staffLogs]
+  );
+
   const filteredLogs = useMemo(() => {
-    return [...logs]
+    const query = search.trim().toLowerCase();
+    return [...staffLogs]
       .filter((log) => {
+        if (roleFilter !== 'ALL' && roleOf(log) !== roleFilter) return false;
+        if (
+          query &&
+          ![log.actor_name, log.target_title, log.details, log.action]
+            .join(' ')
+            .toLowerCase()
+            .includes(query)
+        ) {
+          return false;
+        }
+
         const actionUpper = (log.action || '').toUpperCase();
         const detailsLower = (log.details || '').toLowerCase();
         const targetLower = (log.target_title || '').toLowerCase();
@@ -310,9 +395,12 @@ const ActivityLogs = () => {
             actionUpper === 'ADD_FOUND' ||
             actionUpper === 'FOUND' ||
             (actionUpper === 'CREATED' &&
-              (detailsLower.includes('found') || targetLower.includes('found'))) ||
+              (detailsLower.includes('found') || targetLower.includes('found') ||
+                detailsLower.includes('surrender') || targetLower.includes('surrender'))) ||
             detailsLower.includes('added found') ||
-            detailsLower.includes('created found')
+            detailsLower.includes('created found') ||
+            detailsLower.includes('added surrendered') ||
+            detailsLower.includes('created surrendered')
           );
         }
 
@@ -333,8 +421,10 @@ const ActivityLogs = () => {
             actionUpper === 'ARCHIVED_FOUND' ||
             actionUpper === 'ARCHIVE_FOUND' ||
             (actionUpper.includes('ARCHIV') &&
-              (detailsLower.includes('found') || targetLower.includes('found'))) ||
-            detailsLower.includes('archived found')
+              (detailsLower.includes('found') || targetLower.includes('found') ||
+                detailsLower.includes('surrender') || targetLower.includes('surrender'))) ||
+            detailsLower.includes('archived found') ||
+            detailsLower.includes('archived a surrendered')
           );
         }
 
@@ -378,26 +468,28 @@ const ActivityLogs = () => {
         const timeB = new Date(b.created_at).getTime() || 0;
         return timeB - timeA;
       });
-  }, [logs, filter]);
+  }, [staffLogs, filter, roleFilter, search]);
 
   const ITEMS_PER_PAGE = 10;
   const totalPages = Math.max(1, Math.ceil(filteredLogs.length / ITEMS_PER_PAGE));
+
+  // FIX: the filtered/refetched log list can shrink (a filter change, an
+  // interval refetch that returns fewer rows, an item getting archived
+  // out of the current view, etc.) while `currentPage` was still pointing
+  // at a page that no longer exists — e.g. sitting on page 4 of 4, then
+  // the list shrinks to 2 pages. Previously nothing corrected this, so
+  // paginatedLogs.slice() below would silently return an empty array and
+  // the table would show "No activity logs found" even though matching
+  // logs existed on an earlier page. This clamps currentPage back down to
+  // the new last page whenever totalPages shrinks past it.
+  useEffect(() => {
+    if (currentPage > totalPages) {
+      setCurrentPage(totalPages);
+    }
+  }, [totalPages, currentPage]);
+
   const startIndex = (currentPage - 1) * ITEMS_PER_PAGE;
   const paginatedLogs = filteredLogs.slice(startIndex, startIndex + ITEMS_PER_PAGE);
-
-  const getVisiblePages = () => {
-    const maxVisiblePages = 5;
-    if (totalPages <= maxVisiblePages) {
-      return Array.from({ length: totalPages }, (_, i) => i + 1);
-    }
-    let startPage = currentPage < maxVisiblePages ? 1 : currentPage - 2;
-    let endPage = startPage + maxVisiblePages - 1;
-    if (endPage > totalPages) {
-      endPage = totalPages;
-      startPage = totalPages - maxVisiblePages + 1;
-    }
-    return Array.from({ length: endPage - startPage + 1 }, (_, i) => startPage + i);
-  };
 
   if (loading) {
     return (
@@ -424,14 +516,46 @@ const ActivityLogs = () => {
                 Activity Logs
               </h3>
               <p className="text-lg sm:text-base text-[#7B8AA6] italic mt-1">
-                Real-time system audit logs for lost, found, and claimed property
+                Actions performed by admins and moderators
               </p>
             </div>
           </div>
 
           {/* Filter Selector */}
           <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 w-full xl:w-auto">
-            <div className="relative w-full sm:w-[280px]">
+            <div className="relative w-full sm:w-[240px]">
+              <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-[#0B6B8A]" size={16} />
+              <input
+                value={search}
+                onChange={(e) => {
+                  setSearch(e.target.value);
+                  setCurrentPage(1);
+                }}
+                placeholder="Search name, item, details..."
+                className="w-full pl-10 pr-4 py-3 border border-[#CBD8E8] rounded-full text-sm outline-none bg-white text-[#071E3D] placeholder:text-[#8A98B3] focus:ring-2 focus:ring-[#0B6B8A]/20 focus:border-[#0B6B8A]"
+              />
+            </div>
+
+            <div className="relative w-full sm:w-[170px]">
+              <ShieldCheck className="absolute left-4 top-1/2 -translate-y-1/2 text-[#0B6B8A]" size={16} />
+              <select
+                value={roleFilter}
+                onChange={(e) => {
+                  setRoleFilter(e.target.value);
+                  setCurrentPage(1);
+                }}
+                className="w-full pl-10 pr-8 py-3 border border-[#CBD8E8] rounded-full text-sm font-bold outline-none bg-white text-[#071E3D] cursor-pointer appearance-none focus:ring-2 focus:ring-[#0B6B8A]/20 focus:border-[#0B6B8A]"
+              >
+                <option value="ALL">All Staff</option>
+                <option value="admin">Admins</option>
+                <option value="moderator">Moderators</option>
+              </select>
+              <div className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-[#0B6B8A] text-xs">
+                ▼
+              </div>
+            </div>
+
+            <div className="relative w-full sm:w-[250px]">
               <Filter className="absolute left-4 top-1/2 -translate-y-1/2 text-[#0B6B8A]" size={18} />
               <select
                 value={filter}
@@ -439,14 +563,14 @@ const ActivityLogs = () => {
                   setFilter(e.target.value);
                   setCurrentPage(1);
                 }}
-                className="w-full pl-11 pr-8 py-3 border border-[#CBD8E8] rounded-full text-base font-bold outline-none bg-white text-[#071E3D] cursor-pointer appearance-none focus:ring-2 focus:ring-[#0B6B8A]/20 focus:border-[#0B6B8A]"
+                className="w-full pl-11 pr-8 py-3 border border-[#CBD8E8] rounded-full text-sm font-bold outline-none bg-white text-[#071E3D] cursor-pointer appearance-none focus:ring-2 focus:ring-[#0B6B8A]/20 focus:border-[#0B6B8A]"
               >
                 <option value="ALL">All Activities</option>
                 <option value="LOST_ADDED">Added Lost Items</option>
-                <option value="FOUND_ADDED">Added Found Items</option>
+                <option value="FOUND_ADDED">Added Surrendered Items</option>
                 <option value="ITEM_EDITED">Edited / Updated Items</option>
                 <option value="LOST_ARCHIVED">Archived Lost Items</option>
-                <option value="FOUND_ARCHIVED">Archived Found Items</option>
+                <option value="FOUND_ARCHIVED">Archived Surrendered Items</option>
                 <option value="CLAIMED">Claimed Only</option>
                 <option value="ARCHIVED">All Archives</option>
                 <option value="USER_ADDED">Added Users</option>
@@ -459,6 +583,21 @@ const ActivityLogs = () => {
             </div>
           </div>
         </div>
+      </div>
+
+      {/* Summary */}
+      <div className="grid grid-cols-2 gap-3 border-b border-[#D8E2EF] bg-[#F8FBFE] px-6 py-4 sm:grid-cols-4 sm:px-8 shrink-0">
+        {[
+          { label: 'Total Activities', value: stats.total, tone: 'text-[#071E3D]' },
+          { label: 'Today', value: stats.today, tone: 'text-emerald-600' },
+          { label: 'By Admins', value: stats.admin, tone: 'text-[#0B6B8A]' },
+          { label: 'By Moderators', value: stats.moderator, tone: 'text-violet-600' },
+        ].map((card) => (
+          <div key={card.label} className="rounded-xl border border-[#D8E2EF] bg-white px-4 py-3">
+            <p className="text-[10px] font-black uppercase tracking-wider text-[#7B8AA6]">{card.label}</p>
+            <p className={`mt-1 text-xl font-black ${card.tone}`}>{card.value}</p>
+          </div>
+        ))}
       </div>
 
       {/* Table */}
@@ -487,7 +626,7 @@ const ActivityLogs = () => {
           <tbody className="bg-white">
             {paginatedLogs.length > 0 ? (
               paginatedLogs.map((log, index) => {
-                const meta = actionMeta(log.action);
+                const meta = getLogMeta(log);
                 const Icon = meta.icon;
 
                 return (
@@ -507,10 +646,14 @@ const ActivityLogs = () => {
                     </td>
 
                     <td className="border border-gray-300 p-4 text-center align-middle">
+                      {/* Plain color-coded icon + word — no pill/box
+                          (no background, no border) around it anymore. */}
                       <span
-                        className={`inline-flex items-center gap-1.5 rounded px-3 py-1 text-[11px] font-black uppercase border ${meta.badgeStyle}`}
+                        className={`inline-flex items-center gap-1.5 text-[12px] font-black uppercase ${actionTextClass(
+                          meta.badgeStyle
+                        )}`}
                       >
-                        <Icon size={12} />
+                        <Icon size={14} />
                         {meta.label}
                       </span>
                     </td>
@@ -519,9 +662,13 @@ const ActivityLogs = () => {
                       <span className="block font-bold text-slate-800">
                         {log.actor_name || 'System'}
                       </span>
-                      {log.actor_role && (
-                        <span className="inline-flex items-center gap-1 text-xs text-slate-400">
-                          <User size={11} /> {log.actor_role}
+                      {roleOf(log) && (
+                        <span
+                          className={`mt-1 inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-black uppercase tracking-wide ${
+                            ROLE_STYLE[roleOf(log)] || 'bg-slate-100 text-slate-500 border-slate-200'
+                          }`}
+                        >
+                          <User size={10} /> {roleOf(log)}
                         </span>
                       )}
                     </td>
@@ -539,7 +686,9 @@ const ActivityLogs = () => {
             ) : (
               <tr>
                 <td colSpan={5} className="bg-white py-24 text-center text-[#7B8AA6] font-bold uppercase">
-                  No {filter !== 'ALL' ? filter.replace('_', ' ').toLowerCase() : ''} activity logs found
+                  {search || roleFilter !== 'ALL' || filter !== 'ALL'
+                    ? 'No activity logs match your filters'
+                    : 'No admin or moderator activity yet'}
                 </td>
               </tr>
             )}
@@ -547,55 +696,13 @@ const ActivityLogs = () => {
         </table>
       </div>
 
-      {/* Footer Pagination */}
-      {filteredLogs.length > 0 && (
-        <div className="flex flex-col sm:flex-row items-center justify-between gap-3 bg-white px-6 py-4 border-t border-[#D8E2EF] shrink-0">
-          <p className="text-sm font-medium text-[#7B8AA6]">
-            Showing <span className="font-bold text-[#071E3D]">{startIndex + 1}</span>-
-            <span className="font-bold text-[#071E3D]">
-              {Math.min(startIndex + ITEMS_PER_PAGE, filteredLogs.length)}
-            </span>{' '}
-            of <span className="font-bold text-[#071E3D]">{filteredLogs.length}</span> entries
-          </p>
-
-          <div className="flex items-center gap-1.5">
-            <button
-              type="button"
-              onClick={() => goToPage(Math.max(currentPage - 1, 1))}
-              disabled={currentPage === 1}
-              className="flex items-center justify-center p-2 rounded-lg border border-[#CBD8E8] text-slate-600 hover:bg-[#F6FAFF] disabled:opacity-40 disabled:cursor-not-allowed transition"
-              aria-label="Previous Page"
-            >
-              <ChevronLeft size={16} />
-            </button>
-
-            {getVisiblePages().map((page) => (
-              <button
-                key={page}
-                type="button"
-                onClick={() => goToPage(page)}
-                className={`h-8 min-w-8 rounded-lg text-xs font-bold transition ${
-                  currentPage === page
-                    ? 'bg-[#0B6B8A] text-white shadow-xs'
-                    : 'text-slate-600 hover:bg-[#F6FAFF]'
-                }`}
-              >
-                {page}
-              </button>
-            ))}
-
-            <button
-              type="button"
-              onClick={() => goToPage(Math.min(currentPage + 1, totalPages))}
-              disabled={currentPage === totalPages}
-              className="flex items-center justify-center p-2 rounded-lg border border-[#CBD8E8] text-slate-600 hover:bg-[#F6FAFF] disabled:opacity-40 disabled:cursor-not-allowed transition"
-              aria-label="Next Page"
-            >
-              <ChevronRight size={16} />
-            </button>
-          </div>
-        </div>
-      )}
+      {/* Pagination */}
+      <Pagination
+        currentPage={currentPage}
+        totalItems={filteredLogs.length}
+        pageSize={ITEMS_PER_PAGE}
+        onPageChange={goToPage}
+      />
     </div>
   );
 };

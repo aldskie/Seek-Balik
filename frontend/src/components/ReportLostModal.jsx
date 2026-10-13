@@ -13,9 +13,9 @@ import { FaUniversity, FaTimes, FaInfoCircle } from 'react-icons/fa';
 import PhotoUpload from './PhotoUpload';
 import { createLostItem } from '../api/api';
 import { useApp } from '../context/AppContext';
+import { showToast } from "../utils/toast";
 
 const AREAS = ['Grandstand',
-  'Criminology Building',
   'Verbist Building',
   'Chapel',
   'Administrative Building (Main Building)',
@@ -29,25 +29,25 @@ const AREAS = ['Grandstand',
   'Conrado Dela Cruz Sports Center (CDC)',
   'Senior High School Department Building',
   'HM Laboratory Building',
+  'Student Affairs Office Lobby',
   'Others'];
 const CATS = ['Accessories', 'ID', 'Academic Materials', 'Bags & Wallets', 'Clothing', 'Electronic', 'Keys'];
 
 // Maximum number of locations a reporter can select for a single report.
-const MAX_LOCATIONS = 5;
+const MAX_LOCATIONS = 3;
 
 // ─── Item Name presets ──────────────────────────────────────────────────────
 // Predefined Item Name choices per Category, used to drive the Item Name
-// dropdown once a Category is selected — same pattern as the admin Found
-// Items page. Keys must match the CATS values above exactly. "Other (please
-// specify)" is always appended in the UI so the reporter can still type
-// something not on the list.
+// dropdown once a Category is selected. Keys must match the CATS values
+// above exactly. "Other (please specify)" is always appended in the UI so
+// the reporter can still type something not on the list.
 const ITEM_NAME_OPTIONS = {
   'Accessories': [
     'Watch', 'Bracelet', 'Necklace', 'Ring', 'Earrings', 'Hair Clip', 'Hair Tie',
     'Sunglasses', 'Eyeglasses', 'Cap/Hat', 'Keychain', 'ID Lace', 'Brooch/Pin', 'Belt'
   ],
   'ID': [
-    'Student ID', 'School ID', "Driver's License", 'Passport', 'Government ID',
+    'Student ID', "Driver's License", 'Passport', 'Government ID',
     'Company/Employee ID', 'PhilHealth ID', 'UMID', 'ATM/Debit Card', 'Library Card',
     'Other Identification Card'
   ],
@@ -88,15 +88,9 @@ const OTHER_ITEM_NAME = '__other__';
 // ================= SAINT LOUIS COLLEGE CAMPUS MAP (Leaflet) =================
 //
 // Same real-world rooftop coordinates used on the admin Dashboard's
-// campus hotspot map — photo-calibrated against two Google Places-
-// verified anchors (the official "Saint Louis College La Union" pin and
-// "SLC Gymnasium"). See Dashboard.jsx for the derivation notes.
-//
-// Each entry's `areaValue` maps the building on the map back to the
-// exact string used in AREAS / the location list, so clicking a building
-// and picking from the list always stay in sync.
-// NOTE: "Criminology Building" has no plotted building on the map, so
-// it isn't clickable here — it's still selectable from the list.
+// campus hotspot map. Each entry's `areaValue` maps the building on the map
+// back to the exact string used in AREAS / the location list, so clicking a
+// building and picking from the list always stay in sync.
 
 const CAMPUS_CENTER = { lat: 16.63673, lng: 120.31321 };
 
@@ -115,6 +109,7 @@ const SLC_CSC_BUILDINGS = [
   { id: 12, name: "Conrado Dela Cruz Sports Center", shortName: "Sports Center", num: "12", areaValue: "Conrado Dela Cruz Sports Center (CDC)", lat: 16.638038, lng: 120.313798 },
   { id: 13, name: "Fr. Roger Bruno Eduard Tjolle, CICM (SHS Bldg)", shortName: "SHS Dept Bldg", num: "13", areaValue: "Senior High School Department Building", lat: 16.637693, lng: 120.313277 },
   { id: 14, name: "Rev. Fr. Clement Daelman, CICM (HM Lab)", shortName: "HM Lab Bldg", num: "14", areaValue: "HM Laboratory Building", lat: 16.637518, lng: 120.313215 },
+  { id: 16, name: "Student Affairs Office Lobby", shortName: "SAO Lobby", num: "16", areaValue: "Student Affairs Office Lobby", lat: 16.636311, lng: 120.313174 },
 ];
 
 // ─── Illustrated campus map, adapted as a location picker ─────────────────
@@ -127,7 +122,7 @@ const SLC_CSC_BUILDINGS = [
 const CampusHotspotMap = ({ selected, onSelect, onDone }) => {
   const [hoveredBuilding, setHoveredBuilding] = useState(null);
 
-  // `selected` is the form's array of chosen location strings — a building
+  // `selected` is the form's array of chosen location strings. A building
   // counts as selected if its areaValue is anywhere in that array.
   const selectedIds = new Set(
     SLC_CSC_BUILDINGS.filter((b) => (selected || []).includes(b.areaValue)).map((b) => b.id)
@@ -227,7 +222,7 @@ const CampusHotspotMap = ({ selected, onSelect, onDone }) => {
 
             return (
               <React.Fragment key={`bldg-${b.id}`}>
-                {/* Clickable numbered dot — toggles the location on click */}
+                {/* Clickable numbered dot: toggles the location on click */}
                 <CircleMarker
                   center={[b.lat, b.lng]}
                   radius={active ? 16 : 13}
@@ -330,8 +325,13 @@ const CampusHotspotMap = ({ selected, onSelect, onDone }) => {
   );
 };
 
-const ReportLostModal = ({ onClose }) => {
-  const { currentUser } = useApp();
+const ReportLostModal = ({ onClose, onSuccess }) => {
+  // FIX: PublicBoard reads the logged-in user as `user` from useApp(),
+  // but this file only read `currentUser`. If the context doesn't expose
+  // `currentUser`, every report was saved with a blank email and could
+  // never be matched to the reporter's account. Accept either name.
+  const { currentUser, user } = useApp();
+  const me = currentUser || user || null;
 
   const [submitted, setSubmitted] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -341,15 +341,15 @@ const ReportLostModal = ({ onClose }) => {
   const [showMap, setShowMap] = useState(false);
 
   const [form, setForm] = useState({
-    title: "", 
-    category: "", 
-    location: [], 
+    title: "",
+    category: "",
+    location: [],
     other_location: "",
-    created_date: "", 
+    created_date: "",
     created_date_to: "",
-    created_time: "", 
+    created_time: "",
     created_time_to: "",
-    description: "", 
+    description: "",
     image: [],
   });
 
@@ -447,21 +447,21 @@ const ReportLostModal = ({ onClose }) => {
 
     if (!form.title.trim()) newErrors.title = "Item Name is required.";
     if (!form.category) newErrors.category = "Please select a category.";
-    
+
     if (!form.location || form.location.length === 0) {
       newErrors.location = "Please select at least one location.";
     } else if (form.location.length > MAX_LOCATIONS) {
       newErrors.location = `You can select up to ${MAX_LOCATIONS} locations only.`;
     }
-    
-    if (!form.created_date) newErrors.created_date = "Date Lost (From) is required.";
+
+    if (!form.created_date) newErrors.created_date = "Start date is required.";
 
     if (
       form.created_date &&
       form.created_date_to &&
       form.created_date_to < form.created_date
     ) {
-      newErrors.created_date_to = "'To' date can't be before 'From' date.";
+      newErrors.created_date_to = "End date can't be before the start date.";
     }
 
     if (
@@ -472,10 +472,10 @@ const ReportLostModal = ({ onClose }) => {
       form.created_date === form.created_date_to &&
       form.created_time_to < form.created_time
     ) {
-      newErrors.created_time_to = "'To' time can't be before 'From' time.";
+      newErrors.created_time_to = "End time can't be before the start time.";
     }
 
-    if (!form.description.trim()) newErrors.description = "Description is required.";
+    // Description is optional, so it isn't validated as required.
 
     if (form.location.includes("Others") && !form.other_location.trim()) {
       newErrors.other_location = "Please specify the location.";
@@ -498,6 +498,16 @@ const ReportLostModal = ({ onClose }) => {
   const confirmSubmit = async () => {
     if (isSubmitting) return;
 
+    // FIX: never save a report that can't be linked back to its reporter.
+    // Without the logged-in user's email the report would never show up
+    // in that user's "Items you've personally reported" list.
+    const fullEmail = (me?.email ?? "").trim();
+    if (!fullEmail) {
+      setShowConfirm(false);
+      showToast("We couldn't read your account email. Please log out and log in again, then resubmit.");
+      return;
+    }
+
     setIsSubmitting(true);
 
     try {
@@ -508,8 +518,7 @@ const ReportLostModal = ({ onClose }) => {
         .filter(Boolean)
         .join(", ");
 
-      const posterName = `${currentUser?.first_name ?? ""} ${currentUser?.last_name ?? ""}`.trim();
-      const fullEmail = currentUser?.email ?? "";
+      const posterName = `${me?.first_name ?? ""} ${me?.last_name ?? ""}`.trim();
 
       const excludeKeys = ["location", "other_location", "image"];
 
@@ -521,8 +530,27 @@ const ReportLostModal = ({ onClose }) => {
         }
       });
 
+      // Every item needs a `type` so it can be told apart from a
+      // Surrendered/Found item.
+      formData.append("type", "Lost");
+
       formData.append("poster_name", posterName);
       formData.append("email", fullEmail);
+
+      // STUDENT ID — the 8 digits before the "@" of a student account
+      // email (12345678@slc-sflu.edu.ph -> "12345678"). This is what the
+      // "my items" endpoint matches the report against.
+      //
+      // Only sent when that part really is 8 digits. A staff or other
+      // non-student email (e.g. "admin@...") has no Student ID, and
+      // sending it would fail the backend's "exactly 8 digits" check and
+      // reject the whole report. The report is still linked to the
+      // account through `email` above either way.
+      const studentId = fullEmail.split("@")[0].trim();
+      if (/^\d{8}$/.test(studentId)) {
+        formData.append("student_id", studentId);
+      }
+
       formData.append("location", finalLocation);
 
       (form.image || []).forEach((file) => {
@@ -534,15 +562,19 @@ const ReportLostModal = ({ onClose }) => {
       setTicketCode(response.ticket_code);
       setSubmitted(true);
       setShowConfirm(false);
+
+      // Let PublicBoard refresh its item list right away instead of
+      // waiting for its next poll.
+      onSuccess?.();
     } catch (err) {
-      console.error(err);
-      alert("Failed to submit report.");
+      console.error(err.response?.status, err.response?.data || err);
+      showToast("Failed to submit report.");
     } finally {
       setIsSubmitting(false);
     }
   };
 
-  const formattedEmail = currentUser?.email || "your-id@slc-sflu.edu.ph";
+  const formattedEmail = me?.email || "your-id@slc-sflu.edu.ph";
   const itemNamePresets = ITEM_NAME_OPTIONS[form.category] || [];
   const locationLimitReached = form.location.length >= MAX_LOCATIONS;
 
@@ -606,14 +638,14 @@ const ReportLostModal = ({ onClose }) => {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
                 <div className="space-y-1.5">
                   <label className="block text-[13px] font-semibold text-slate-500 mb-1.5">Category *</label>
-                  <select 
+                  <select
                     className={`w-full px-3.5 py-2.5 rounded-lg border ${
                       errors.category ? "border-red-500 bg-red-50" : "border-slate-300 bg-white"
                     } text-[13px] font-semibold outline-none transition-all duration-200 focus:border-[#155F87] focus:ring-2 focus:ring-[#0B648D]/20 ${
                       form.category ? "text-slate-800" : "text-slate-400 font-normal"
                     }`}
-                    name="category" 
-                    value={form.category} 
+                    name="category"
+                    value={form.category}
                     onChange={handleCategoryChange}
                   >
                     <option value="" disabled hidden>Select a category</option>
@@ -652,7 +684,7 @@ const ReportLostModal = ({ onClose }) => {
                         errors.title ? "border-red-500 bg-red-50" : "border-slate-300 bg-white"
                       } text-[13px] font-semibold text-slate-800 placeholder:text-slate-400 placeholder:font-normal outline-none transition-all duration-200 focus:border-[#155F87] focus:ring-2 focus:ring-[#0B648D]/20`}
                       name="title"
-                      value={form.title}
+                      value={form.title} maxLength={30}
                       onChange={handleChange}
                       placeholder="Please specify the item name"
                       autoFocus
@@ -667,9 +699,9 @@ const ReportLostModal = ({ onClose }) => {
                 <div className="min-w-0">
                   <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">Reporting as</p>
                   <p className="text-sm font-bold text-slate-700 truncate">
-                    {currentUser ? `${currentUser.first_name ?? ""} ${currentUser.last_name ?? ""}`.trim() : "—"}
+                    {me ? `${me.first_name ?? ""} ${me.last_name ?? ""}`.trim() || "—" : "—"}
                   </p>
-                  <p className="text-xs text-slate-500 truncate">{currentUser?.email || ""}</p>
+                  <p className="text-xs text-slate-500 truncate">{me?.email || ""}</p>
                 </div>
               </div>
 
@@ -677,7 +709,7 @@ const ReportLostModal = ({ onClose }) => {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-5 items-start">
                 {/* Single-Line Vertical Location List */}
                 <div className="space-y-1.5 sm:col-span-2">
-                  <div className="flex items-center justify-between mb-1.5">
+                  <div className="flex items-center justify-between mb-1">
                     <label className="block text-[13px] font-semibold text-slate-500">
                       Location Lost * <span className="text-slate-400 font-normal">(up to {MAX_LOCATIONS})</span>
                     </label>
@@ -691,6 +723,9 @@ const ReportLostModal = ({ onClose }) => {
                         : `🗺️ View Campus Map${form.location.length ? ` (${form.location.length}/${MAX_LOCATIONS})` : ''}`}
                     </button>
                   </div>
+                  <p className="text-[11px] text-slate-400 font-medium mb-1.5">
+                    Pick the place(s) you remember being at when you had the item — where you think you lost it.
+                  </p>
 
                   {/* 1 Line Per Location Box */}
                   <div className={`w-full rounded-xl border max-h-48 overflow-y-auto divide-y divide-slate-100 bg-slate-50/50 p-1 ${
@@ -713,10 +748,10 @@ const ReportLostModal = ({ onClose }) => {
                                 : "text-slate-700 font-medium hover:bg-slate-200/60"
                           }`}
                         >
-                          <span className="truncate pr-2">{area}</span>
+                          <span className="truncate pr-2">{area === "Others" ? "Others (please specify)" : area}</span>
                           <span className={`w-4 h-4 rounded flex-shrink-0 flex items-center justify-center text-[10px] font-bold border transition-colors ${
-                            isSelected 
-                              ? "bg-white text-[#155F87] border-white" 
+                            isSelected
+                              ? "bg-white text-[#155F87] border-white"
                               : "border-slate-300 bg-white text-transparent"
                           }`}>
                             ✓
@@ -734,6 +769,8 @@ const ReportLostModal = ({ onClose }) => {
 
                   {/* Custom Location Field (When "Others" is selected) */}
                   {form.location.includes("Others") && (
+                    <>
+                    <p className="mt-2.5 mb-1 text-[11px] font-bold uppercase text-slate-500">If others, please specify *</p>
                     <input
                       className={`w-full mt-2.5 px-3.5 py-2.5 rounded-lg border ${
                         errors.other_location ? "border-red-500 bg-red-50" : "border-slate-300 bg-white"
@@ -741,22 +778,23 @@ const ReportLostModal = ({ onClose }) => {
                       name="other_location"
                       value={form.other_location}
                       onChange={handleChange}
-                      placeholder="Please specify location"
+                      placeholder="Please specify the area lost"
                       autoFocus
                     />
+                    </>
                   )}
                   {errors.other_location && <p className="text-red-500 text-[11px] font-semibold">{errors.other_location}</p>}
                 </div>
               </div>
 
-              {/* Date Lost & Time — now settable as a range (From / To) */}
+              {/* Date Lost & Time — settable as a range (From / To) */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
                 {/* Date Lost range */}
                 <div className="space-y-1.5">
                   <label className="block text-[13px] font-semibold text-slate-500 mb-1.5">Date Lost *</label>
                   <div className="grid grid-cols-2 gap-2">
                     <div className="space-y-1">
-                      <span className="block text-[10px] font-bold uppercase tracking-wide text-slate-400">From</span>
+                      <span className="block text-[10px] font-bold uppercase tracking-wide text-slate-400">Start Date</span>
                       <input
                         className={`w-full px-3 py-2.5 rounded-lg border ${
                           errors.created_date ? "border-red-500 bg-red-50" : "border-slate-300 bg-white"
@@ -769,7 +807,7 @@ const ReportLostModal = ({ onClose }) => {
                       />
                     </div>
                     <div className="space-y-1">
-                      <span className="block text-[10px] font-bold uppercase tracking-wide text-slate-400">To</span>
+                      <span className="block text-[10px] font-bold uppercase tracking-wide text-slate-400">End Date</span>
                       <input
                         className={`w-full px-3 py-2.5 rounded-lg border ${
                           errors.created_date_to ? "border-red-500 bg-red-50" : "border-slate-300 bg-white"
@@ -792,7 +830,7 @@ const ReportLostModal = ({ onClose }) => {
                   <label className="block text-[13px] font-semibold text-slate-500 mb-1.5">Approx. Time</label>
                   <div className="grid grid-cols-2 gap-2">
                     <div className="space-y-1">
-                      <span className="block text-[10px] font-bold uppercase tracking-wide text-slate-400">From</span>
+                      <span className="block text-[10px] font-bold uppercase tracking-wide text-slate-400">Start Time</span>
                       <input
                         className="w-full px-3 py-2.5 rounded-lg border border-slate-300 bg-white text-[13px] font-semibold text-slate-800 outline-none transition-all duration-200 focus:border-[#155F87] focus:ring-2 focus:ring-[#0B648D]/20"
                         type="time"
@@ -802,7 +840,7 @@ const ReportLostModal = ({ onClose }) => {
                       />
                     </div>
                     <div className="space-y-1">
-                      <span className="block text-[10px] font-bold uppercase tracking-wide text-slate-400">To</span>
+                      <span className="block text-[10px] font-bold uppercase tracking-wide text-slate-400">End Time</span>
                       <input
                         className={`w-full px-3 py-2.5 rounded-lg border ${
                           errors.created_time_to ? "border-red-500 bg-red-50" : "border-slate-300 bg-white"
@@ -818,19 +856,22 @@ const ReportLostModal = ({ onClose }) => {
                 </div>
               </div>
 
-              {/* Description */}
+              {/* Description (optional) */}
               <div className="space-y-1.5">
-                <label className="block text-[13px] font-semibold text-slate-500 mb-1.5">Description *</label>
-                <textarea 
+                <label className="block text-[13px] font-semibold text-slate-500 mb-1.5">
+                  Description <span className="text-slate-400 font-normal">(optional)</span>
+                </label>
+                <textarea
                   className={`w-full px-3.5 py-2.5 rounded-lg border ${
                     errors.description ? "border-red-500 bg-red-50" : "border-slate-300 bg-white"
                   } text-[13px] font-semibold text-slate-800 placeholder:text-slate-400 placeholder:font-normal outline-none transition-all duration-200 focus:border-[#155F87] focus:ring-2 focus:ring-[#0B648D]/20`}
-                  rows={3} 
-                  name="description" 
-                  value={form.description} 
+                  rows={3}
+                  name="description"
+                  value={form.description} maxLength={100}
                   onChange={handleChange}
-                  placeholder="Mention unique marks, brand, stickers..." 
+                  placeholder="Mention unique marks, brand, stickers..."
                 />
+                <p className="mt-1 text-right text-[11px] font-semibold text-slate-400">{(form.description || "").length}/100</p>
                 {errors.description && <p className="text-red-500 text-[11px] font-semibold">{errors.description}</p>}
               </div>
 

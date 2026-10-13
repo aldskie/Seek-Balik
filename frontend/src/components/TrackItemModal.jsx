@@ -9,6 +9,11 @@ const statusBadgeClass = (status) =>
     ? "bg-red-100 text-red-700"
     : "bg-yellow-100 text-yellow-700";
 
+// Ticket codes look like TKT-12-AB3F: "TKT", the item number, and 4
+// letters/digits. Spaces and lower-case letters are tidied up first.
+const TICKET_FORMAT = /^TKT-\d+-[A-Z0-9]{4}$/;
+const normalizeTicket = (value) => String(value || "").replace(/\s+/g, "").toUpperCase();
+
 export default function TrackItemModal({ onClose }) {
   const [ticketCode, setTicketCode] = useState("");
   const [item, setItem] = useState(null);
@@ -18,12 +23,20 @@ export default function TrackItemModal({ onClose }) {
   const handleTrack = async () => {
     if (!ticketCode || loading) return;
 
-    setLoading(true);
+    const code = normalizeTicket(ticketCode);
     setError("");
     setItem(null);
 
+    if (!TICKET_FORMAT.test(code)) {
+      setError("Wrong ticket format. A ticket code looks like TKT-12-AB3F.");
+      return;
+    }
+
+    setTicketCode(code);
+    setLoading(true);
+
     try {
-      const res = await trackItem(ticketCode);
+      const res = await trackItem(code);
 
       if (res.found) {
         setItem(res.item);
@@ -31,7 +44,11 @@ export default function TrackItemModal({ onClose }) {
         setError("No record found for this ticket code.");
       }
     } catch (err) {
-      setError("Unable to find ticket. Please try again.");
+      if (err?.response?.status === 404) {
+        setError("No record found for this ticket code.");
+      } else {
+        setError("Unable to check the ticket right now. Please try again.");
+      }
     } finally {
       setLoading(false);
     }

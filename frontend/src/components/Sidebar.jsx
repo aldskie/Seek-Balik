@@ -20,6 +20,8 @@ import {
   FaHeartbeat,
   FaUndo,
   FaQuestionCircle,
+  FaArchive,
+  FaBug,
 } from "react-icons/fa";
 
 const Sidebar = ({ role, onLogout, isCollapsed, setIsCollapsed, onOpenHelp }) => {
@@ -82,15 +84,16 @@ const Sidebar = ({ role, onLogout, isCollapsed, setIsCollapsed, onOpenHelp }) =>
       path: "/dashboard",
       type: "single",
     },
+
     {
       id: "LostAndSurrendered",
-      label: "Lost and Surrendered items",
+      label: "Item Management",
       icon: FaExclamationTriangle,
       type: "group",
       children: [
         {
           id: "Lost Items",
-          label: "Lost items",
+          label: "Lost Items",
           icon: FaSearch,
           path:
             normalizedRole === "moderator"
@@ -100,13 +103,13 @@ const Sidebar = ({ role, onLogout, isCollapsed, setIsCollapsed, onOpenHelp }) =>
         },
         {
           id: "Found Items",
-          label: "Found Items",
+          label: "Surrendered Items",
           icon: FaFlag,
           path: "/dashboard/surrendered-items",
           type: "single",
         },
         {
-          id: "Claimed Items",
+          id: "Claim Request",
           label: "Claim Request",
           icon: FaHandshake,
           path: "/dashboard/claim-requests",
@@ -114,6 +117,7 @@ const Sidebar = ({ role, onLogout, isCollapsed, setIsCollapsed, onOpenHelp }) =>
         },
       ],
     },
+
     {
       id: "Leaderboard",
       label: "Leaderboards",
@@ -121,6 +125,7 @@ const Sidebar = ({ role, onLogout, isCollapsed, setIsCollapsed, onOpenHelp }) =>
       path: "/dashboard/leaderboard",
       type: "single",
     },
+
     {
       id: "Reports",
       label: "Reports",
@@ -128,17 +133,22 @@ const Sidebar = ({ role, onLogout, isCollapsed, setIsCollapsed, onOpenHelp }) =>
       path: "/dashboard/reports",
       type: "single",
     },
+
     ...(normalizedRole === "admin"
       ? [
           {
             id: "Users",
-            label: "Users",
+            label: "User Management",
             icon: FaUsers,
             path: "/dashboard/users",
             type: "single",
           },
         ]
       : []),
+
+    // ==========================
+    // UTILITIES
+    // ==========================
     {
       id: "Utilities",
       label: "Utilities",
@@ -159,14 +169,43 @@ const Sidebar = ({ role, onLogout, isCollapsed, setIsCollapsed, onOpenHelp }) =>
           path: "/dashboard/utilities/activity-logs",
           type: "single",
         },
+        // Report Issues — admin only.
+        ...(normalizedRole === "admin"
+          ? [
+              {
+                id: "Report Issues",
+                label: "Reported Issues",
+                icon: FaBug,
+                path: "/dashboard/utilities/report-issues",
+                type: "single",
+              },
+            ]
+          : []),
         {
-          id: "Back and Restore",
-          label: "Back and Restore",
-          icon: FaUndo,
-          path: "/dashboard/utilities/backup-restore",
+          id: "Help Center",
+          label: "Help Center",
+          icon: FaQuestionCircle,
+          path: "/dashboard/help-center",
           type: "single",
         },
-      
+        {
+          id: "Archive",
+          label: "Archive",
+          icon: FaArchive,
+          path: "/dashboard/utilities/archive",
+          type: "single",
+        },
+        ...(normalizedRole === "admin"
+          ? [
+              {
+                id: "Backup and Restore",
+                label: "Backup & Restore",
+                icon: FaUndo,
+                path: "/dashboard/utilities/backup-restore",
+                type: "single",
+              },
+            ]
+          : []),
       ],
     },
   ];
@@ -192,6 +231,7 @@ const Sidebar = ({ role, onLogout, isCollapsed, setIsCollapsed, onOpenHelp }) =>
 
             <button
               type="button"
+              title="View profile"
               onClick={() => setShowProfileModal(true)}
               className="mt-2 flex w-full items-center gap-3 rounded-xl py-1.5 pr-2 text-left transition hover:bg-[#EEF6FA]"
             >
@@ -202,10 +242,10 @@ const Sidebar = ({ role, onLogout, isCollapsed, setIsCollapsed, onOpenHelp }) =>
               />
               <span className="min-w-0">
                 <span className="block truncate text-[17px] font-extrabold leading-tight text-[#0B6FA4]">
-                  {formattedRole || "User"} {currentUser?.last_name}
+                  {currentUser?.full_name || "User"}
                 </span>
                 <span className="block truncate text-[15px] font-medium leading-tight text-slate-400">
-                  View profile
+                  {formattedRole || "User"}
                 </span>
               </span>
             </button>

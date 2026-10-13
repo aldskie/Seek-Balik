@@ -1,29 +1,49 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import {
   FiCalendar,
-  FiTrash2,
   FiEye,
   FiSearch,
   FiX,
-  FiPlus,
   FiCheck,
-  FiCheckSquare,
-  FiSquare,
   FiArrowRight,
   FiChevronLeft,
   FiChevronRight,
   FiArrowLeft,
   FiAlertTriangle,
+  FiUserX,
+  FiSliders,
 } from "react-icons/fi";
 import {
   getClaims,
   getItemById,
   scheduleMeeting,
-  getAvailableSchedules,
-  createAvailableSchedule,
-  deleteAvailableSchedule,
+  declineClaim,
+  getBlockedSlots,
 } from "../api/api";
-import { logActivity } from "../utils/activityLog";
+import ManageSlotsModal from "../components/ManageSlotsModal";
+import { logActivity } from "../utils/Activitylog";
+import Pagination from "../components/Pagination";
+import { isClaimAutoArchived } from "../utils/claimArchive";
+
+// Saturdays: 8 AM - 11 AM only. Sundays: no meeting slots.
+// (The server enforces the same rule.)
+const SATURDAY_SLOTS = ["8:00 AM - 9:00 AM", "9:00 AM - 10:00 AM", "10:00 AM - 11:00 AM"];
+
+const weekdayOf = (dateStr) => {
+  if (!dateStr) return null;
+  const d = new Date(`${String(dateStr).slice(0, 10)}T00:00:00`);
+  return isNaN(d.getTime()) ? null : d.getDay(); // 0 = Sunday, 6 = Saturday
+};
+
+const slotsAllowedOn = (dateStr, slots) => {
+  const day = weekdayOf(dateStr);
+  if (day === 0) return [];
+  if (day === 6) return slots.filter((s) => SATURDAY_SLOTS.includes(s));
+  return slots;
+};
+
+import { confirmAction } from "../components/ConfirmDialog";
 
 // ==========================================================
 // ANSWER COMPARISON (STAFF-ONLY)
@@ -47,16 +67,17 @@ const normalize = (value) =>
     .trim()
     .toLowerCase();
 
+// Flexible ID lookup across MongoDB / PostgreSQL formats.
+const getClaimId = (claim) => claim?.id ?? claim?._id ?? claim?.claim_id ?? null;
+
 // `itemOverride`, when provided, is a FULL item record fetched fresh via
 // getItemById() (see fetchFullItem below) — the same source of truth
 // FoundItems.jsx reads from when staff edits an item's verification
 // answers. It's preferred over claim.item_details/claim.item because
 // the claims list endpoint (getClaims()) is not guaranteed to return
-// verification_answer_N on the embedded item — that field is meant to
-// stay hidden from the claimant-facing flow, so some serializers strip
-// it out of any item payload that isn't specifically the admin item
-// lookup. Falls back to whatever's already on the claim if the fetch
-// hasn't completed yet or failed, so something still renders.
+// verification_answer_N on the embedded item. Falls back to whatever's
+// already on the claim if the fetch hasn't completed yet or failed, so
+// something still renders.
 const getRecordedAnswer = (claim, index, itemOverride) => {
   const n = index + 1;
   const item = itemOverride || claim?.item_details || claim?.item || {};
@@ -72,20 +93,14 @@ const getRecordedAnswer = (claim, index, itemOverride) => {
 //
 // ClaimModal.jsx has always built a `proof_description` string shaped like:
 //   "1. <question>\nAnswer: <answer>\n\n2. <question>\nAnswer: <answer>..."
-// (see legacyProof in ClaimModal.jsx) for EVERY claim, regardless of
-// whether the structured question_N/answer_N columns exist/are filled.
-// Any claim submitted before those columns were added to the Claim model
-// has them blank, so buildAnswerComparison below has nothing structured
-// to read — this parses proof_description back into the same
-// {index, question, answer} shape so the panel still shows something
-// instead of an empty state.
+// Any claim submitted before the question_N/answer_N columns were added
+// has them blank, so this parses proof_description back into the same
+// {index, question, answer} shape so the panel still shows something.
 //
 // There is no admin-recorded correct answer to compare against in this
-// legacy shape (that mapping only exists via question_N/answer_N plus
-// the item's verification_answer_N, matched up by position), so every
-// parsed row here is always isMatch: null ("Not auto-checked") — this
-// never invents a false mismatch, it only recovers what the claimant
-// actually typed for display.
+// legacy shape, so every parsed row is always isMatch: null ("Not
+// auto-checked") — this never invents a false mismatch, and a legacy
+// claim is never blocked from scheduling by the mismatch rule.
 const parseLegacyProof = (proofDescription) => {
   if (!proofDescription || typeof proofDescription !== "string") return [];
 
@@ -120,11 +135,7 @@ const parseLegacyProof = (proofDescription) => {
 // ID, etc., which have no admin-defined correct answer) are shown as
 // "not auto-checked" instead of silently treated as a mismatch.
 //
-// Falls back to parseLegacyProof() when question_1..4 are all empty —
-// see that function's comment for why (legacy claims predating those
-// columns). That fallback path never marks anything as a mismatch,
-// since there's no recorded answer available to compare against in that
-// shape.
+// Falls back to parseLegacyProof() when question_1..4 are all empty.
 const buildAnswerComparison = (claim, itemOverride) => {
   if (!claim) return [];
 
@@ -159,50 +170,205 @@ const buildAnswerComparison = (claim, itemOverride) => {
   return parseLegacyProof(claim.proof_description);
 };
 
-// A claim submitted by ClaimModal.jsx with mismatched (or unverified)
-// answers goes through with no meeting_date/meeting_time — the claimant
-// never saw a Schedule step for it, so it always needs staff to review
-// the answers first before a meeting is arranged. Anything with a
-// meeting_date already set was either scheduled by the claimant
-// themselves (matched answers) or already scheduled by staff.
-//
-// Also honors the `needs_manual_review` flag ClaimModal.jsx sends at
-// submission time, in case the backend ever schedules a slot on its own
-// for a claim that was still flagged unverified — either signal alone
-// is enough to count as pending.
+// Number of questions on this claim flagged against the item's recorded
+// correct answer. Used both for the warning banners and — since the
+// mismatch rule BLOCKS scheduling rather than merely advising — as the
+// gate on every scheduling control.
+const countMismatches = (claim, itemOverride) =>
+  buildAnswerComparison(claim, itemOverride).filter((a) => a.isMatch === false).length;
+
+// A claim is "pending review" ONLY while it has no meeting slot yet.
+// This mainly covers legacy/edge cases — under the current
+// ClaimModal.jsx, every claim submits with a claimant-picked slot
+// regardless of whether their answers matched. See needsAttention below
+// for the fuller rule.
 const isPendingReview = (claim) =>
-  !!claim && (!claim.meeting_date || !claim.meeting_time || !!claim.needs_manual_review);
+  !!claim && (!claim.meeting_date || !claim.meeting_time);
 
 // True when at least one of this claim's answers was flagged against
 // the item's recorded correct answer — regardless of whether a meeting
-// slot exists yet. A claim can be both scheduled AND mismatched (e.g.
-// staff scheduled it manually despite a flagged answer), so this stays
-// independent of isPendingReview.
-const hasMismatch = (claim) =>
-  buildAnswerComparison(claim).some((a) => a.isMatch === false);
+// slot exists yet.
+const hasMismatch = (claim) => countMismatches(claim) > 0;
 
-// A claim belongs in the "Needs Attention" table whenever it's either
-// pending (no claimant-picked schedule yet) or has a flagged mismatch —
-// the two signals are independent, so a claim can land here for either
-// reason (or both at once).
-const needsAttention = (claim) => isPendingReview(claim) || hasMismatch(claim);
+// True once staff has explicitly approved a flagged claim and scheduled
+// it anyway (persisted via scheduleMeeting's
+// `staff_approved_despite_mismatch` field).
+//
+// ASSUMPTION: scheduleMeeting's serializer accepts and RETURNS
+// `staff_approved_despite_mismatch` on the claim object from
+// getClaims(). Otherwise an approved-and-scheduled mismatched claim will
+// keep reappearing as Pending every time the list refreshes.
+const isMismatchApproved = (claim) => !!claim?.staff_approved_despite_mismatch;
+
+// True once an admin/moderator has confirmed this claim's meeting through
+// Continue to Schedule -> Confirm Schedule (or Approve). schedule_meeting in
+// claim/views.py saves staff_scheduled = True. The claim stays in the
+// Schedule Meeting table and is marked "Scheduled by Staff".
+const isStaffScheduled = (claim) => claim?.staff_scheduled === true;
+
+// How many earlier meetings this claimant missed for this same item
+// (backend claim/noshow.py). Shown as "Missed N previous meeting(s)".
+const missedMeetings = (claim) => Number(claim?.missed_meetings || 0);
+
+// Declined with the "Not the Owner" button (backend Claim.not_owner).
+// These are listed in the Declined tab together with every other
+// declined claim; a remark tells the two kinds apart.
+const isNotOwner = (claim) => claim?.not_owner === true;
+const missedLabel = (n) => `Missed ${n} previous meeting${n === 1 ? "" : "s"}`;
+
+// True once staff has explicitly declined a claim through the Review
+// modal's "Decline" button (see handleDecline below).
+//
+// Claim.STATUS_CHOICES in models.py uses "Declined", but older data /
+// backends may store "rejected", "declined" or "denied", and the value
+// may live on `status` or `claim_status` (or a boolean flag), so all of
+// those are accepted here (normalize() lower-cases before comparing).
+const DECLINED_STATUSES = ["rejected", "declined", "decline", "denied"];
+
+const isDeclined = (claim) =>
+  !!claim &&
+  (DECLINED_STATUSES.includes(normalize(claim.status)) ||
+    DECLINED_STATUSES.includes(normalize(claim.claim_status)) ||
+    claim.is_declined === true ||
+    claim.declined === true);
+
+// ==========================================================
+// LOCAL DECLINED-CLAIMS STORE (safety net)
+//
+// The Declined tab is driven by whatever getClaims() returns. If the
+// backend's declineClaim endpoint doesn't persist status "Declined"
+// (or the claims list endpoint filters declined claims out), declined
+// claims would vanish from every tab and never reach the Declined tab.
+//
+// To guarantee a declined claim always lands in the Declined tab, each
+// successful decline is also remembered in this browser's localStorage
+// (keyed by claim id, with a snapshot of the claim). On every load():
+//   - a claim the server still returns but not as declined is marked
+//     "Declined" locally, and
+//   - a claim the server no longer returns at all is re-added from the
+//     snapshot.
+//
+// NOTE: this is per-browser. The real fix is for the backend to save
+// status = "Declined" and keep returning those claims from getClaims().
+// ==========================================================
+const DECLINED_STORE_KEY = "claimRequests.declinedClaims";
+
+const readDeclinedStore = () => {
+  try {
+    const raw = localStorage.getItem(DECLINED_STORE_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+};
+
+const saveDeclinedClaim = (id, snapshot) => {
+  try {
+    const store = readDeclinedStore();
+    store[String(id)] = snapshot;
+    localStorage.setItem(DECLINED_STORE_KEY, JSON.stringify(store));
+  } catch (err) {
+    console.error("Could not remember declined claim locally:", err);
+  }
+};
+
+// True when a saved snapshot is NOT the same claim as the one the server
+// returned under that id. Claim ids can be reused after the database is
+// reset or recreated, so a brand-new claim could get the id of a claim
+// declined earlier in this browser — and would then wrongly be shown as
+// declined. The claim_date (set once, when the claim is created) tells
+// them apart.
+const isStaleSnapshot = (saved, serverClaim) => {
+  const savedDate = saved?.claim_date;
+  const serverDate = serverClaim?.claim_date;
+  if (!savedDate || !serverDate) return false;
+  const savedTime = new Date(savedDate).getTime();
+  const serverTime = new Date(serverDate).getTime();
+  if (Number.isNaN(savedTime) || Number.isNaN(serverTime)) {
+    return String(savedDate) !== String(serverDate);
+  }
+  return savedTime !== serverTime;
+};
+
+const forgetDeclinedClaims = (ids) => {
+  if (!ids.length) return;
+  try {
+    const store = readDeclinedStore();
+    ids.forEach((id) => delete store[String(id)]);
+    localStorage.setItem(DECLINED_STORE_KEY, JSON.stringify(store));
+  } catch (err) {
+    console.error("Could not clean up the local declined store:", err);
+  }
+};
+
+const mergeDeclinedStore = (serverClaims) => {
+  const store = readDeclinedStore();
+  const storedIds = Object.keys(store);
+  if (storedIds.length === 0) return serverClaims;
+
+  const seen = new Set();
+  const staleIds = [];
+
+  const merged = serverClaims.map((c) => {
+    const id = String(getClaimId(c));
+    seen.add(id);
+    let saved = store[id];
+
+    // A different (newer) claim that reuses an old declined claim's id:
+    // never mark it declined, and drop the old entry.
+    if (saved && isStaleSnapshot(saved, c)) {
+      staleIds.push(id);
+      saved = null;
+    }
+
+    if (saved && !isDeclined(c)) {
+      return {
+        ...c,
+        status: "Declined",
+        decline_reason: c.decline_reason || saved.decline_reason,
+        decline_date: c.decline_date || saved.decline_date,
+      };
+    }
+    return c;
+  });
+
+  // Claims the server stopped returning (e.g. it filters out declined
+  // ones) are restored from the saved snapshot.
+  storedIds.forEach((id) => {
+    if (!seen.has(id)) merged.push({ ...store[id], status: "Declined" });
+  });
+
+  forgetDeclinedClaims(staleIds);
+  return merged;
+};
+
+// A claim belongs in "Needs Attention" (status: Pending) while it's
+// still waiting on staff — either it has no meeting slot yet
+// (isPendingReview), OR it has a flagged mismatch staff hasn't
+// explicitly approved yet (hasMismatch && !isMismatchApproved).
+//
+// A declined claim is never pending — staff has already made the call,
+// and it lives in the Declined tab instead.
+const needsAttention = (claim) =>
+  !isDeclined(claim) &&
+  (isPendingReview(claim) || (hasMismatch(claim) && !isMismatchApproved(claim)));
 
 // ==========================================================
 // ITEM-ALREADY-CLAIMED DETECTION
 //
-// FoundItems.jsx's "Mark as Claimed" button (handleClaimItem) sets the
-// ITEM's status straight to "Claimed" via editLostItem — completely
-// outside this claim-request flow, with no reference back to any
-// specific Claim record. That means a claim sitting in this table (in
-// either tab) can point at an item staff already resolved by hand from
-// the Found Items screen, and nothing here would show it.
+// FoundItems.jsx's "Mark as Claimed" button sets the ITEM's status
+// straight to "Claimed" via editLostItem — completely outside this
+// claim-request flow. Those claims are filtered OUT of the Needs
+// Attention and Schedule Meeting tabs entirely (see visibleClaims
+// below), since the item is already resolved and nothing on this
+// screen can act on it.
 //
 // `itemOverride`, when provided, is the full item record fetched via
 // getItemById() for whichever claim is open in the Review/Schedule
-// modals (see fetchFullItem) — the most current source of truth. Table
-// rows fall back to whatever item payload getClaims() embedded on the
-// claim (item_details / item), which should carry `status` the same way
-// it already carries title/category/location.
+// modals — the most current source of truth. Table rows fall back to
+// the item payload getClaims() embedded on the claim.
+// ==========================================================
 const getItemStatus = (claim, itemOverride) => {
   const item = itemOverride || claim?.item_details || claim?.item || {};
   return item?.status || null;
@@ -217,23 +383,12 @@ const isItemAlreadyClaimed = (claim, itemOverride) =>
 // One two-column, divider-separated card per question: claimant's
 // submitted answer on the left, the admin-recorded correct answer (set
 // in FoundItems.jsx) on the right. Used by both the Review modal and
-// the Schedule modal's inline "Answer Check" panel so the two stay in
-// sync instead of drifting apart over edits.
+// the Schedule modal's inline "Answer Check" panel.
 //
-// `compact`: renders a tighter version for the Schedule modal, where
-// space is more limited.
+// `compact`: renders a tighter version for the Schedule modal.
 //
-// This is now the ONLY claimant-vs-staff comparison surface in the
-// Review modal — the separate "Compare Claimant's Answers to the
-// Staff-Recorded Answers" block (which showed free-text
-// proof_description alongside a plain list of recorded Q&A) was
-// removed since it duplicated the same information this component
-// already shows per-question, just without the match/mismatch flags.
-//
-// Mismatches are flagged in RED (not blue) so a wrong answer reads as
-// an actual warning at a glance, while both the claimant's answer and
-// the staff-recorded answer stay visible side-by-side underneath —
-// the flag never hides either value, it just calls attention to them.
+// Mismatches are flagged in RED, while both the claimant's answer and
+// the staff-recorded answer stay visible side-by-side underneath.
 // ==========================================================
 
 const AnswerComparisonList = ({ comparisons, compact = false }) => {
@@ -338,7 +493,40 @@ const AnswerComparisonList = ({ comparisons, compact = false }) => {
   );
 };
 
+// Decline reasons sent along with declineClaim() (and included in the
+// email to the claimant). Staff do not type these in.
+//
+// AUTO_DECLINE_REASON is used when the claim has flagged (mismatched)
+// answers. GENERIC_DECLINE_REASON is used when a claim WITHOUT flagged
+// answers is declined, so the claimant isn't told their answers were
+// wrong when they weren't.
+const AUTO_DECLINE_REASON = "The answers provided did not match our records.";
+const GENERIC_DECLINE_REASON = "We were unable to verify your claim to this item.";
+// Used by the "Not the Owner" button (staff found at/after verification
+// that the claimant does not own the item).
+const NOT_OWNER_REASON = "After verification, you were found not to be the owner of this item.";
+
+// Why a declined claim was declined, used for the remark in the Declined
+// table and at the top of the Review modal:
+//   "notOwner" — declined with the "Not the Owner" button
+//   "mismatch" — declined because answers didn't match the records
+//   "other"    — declined without flagged answers (couldn't verify)
+const getDeclineCategory = (claim) => {
+  const reason = claim?.decline_reason || claim?.remarks || "";
+  if (isNotOwner(claim) || reason === NOT_OWNER_REASON) return "notOwner";
+  if (reason === AUTO_DECLINE_REASON || hasMismatch(claim)) return "mismatch";
+  return "other";
+};
+
+const DECLINE_CATEGORY_LABEL = {
+  notOwner: "Not the Owner",
+  mismatch: "Mismatch",
+  other: "Unable to Verify",
+};
+
+
 const ClaimRequests = () => {
+  const navigate = useNavigate();
   const [claims, setClaims] = useState([]);
   const [loading, setLoading] = useState(true);
 
@@ -348,9 +536,8 @@ const ClaimRequests = () => {
   // Full item record for whichever claim is currently open in the
   // Review/Schedule modals — fetched via getItemById() the same way
   // FoundItems.jsx does, so verification_answer_N (the staff-recorded
-  // correct answers) is guaranteed to be present, even if the claims
-  // list endpoint's embedded item payload omits it. Cleared whenever
-  // the modal closes or a different claim is opened.
+  // correct answers) is guaranteed to be present. Cleared whenever the
+  // modal closes or a different claim is opened.
   const [fullItem, setFullItem] = useState(null);
   const [fullItemLoading, setFullItemLoading] = useState(false);
 
@@ -358,35 +545,61 @@ const ClaimRequests = () => {
   const [meetingTime, setMeetingTime] = useState("");
   const [sending, setSending] = useState(false);
 
+  // True once staff has approved a claim with flagged (mismatched)
+  // answers, overriding the automatic block so scheduling can continue
+  // anyway. Initialized from the claim's own persisted
+  // staff_approved_despite_mismatch flag when a claim is opened (see
+  // openReview), but can also be set fresh via handleApprove.
+  const [approvedMismatch, setApprovedMismatch] = useState(false);
+
+  // Loading flag for the "Decline" action, separate from `sending`.
+  const [declining, setDeclining] = useState(false);
+
+  // Controls the decline confirmation modal shown before a decline is
+  // actually submitted. The reason is automatic — there is no text box.
+  // Decline is only available from inside the Review modal, so the
+  // claim being declined is always `selected`.
+  const [showDeclineConfirm, setShowDeclineConfirm] = useState(false);
+
+  // True when Decline was clicked straight from a Needs Attention row
+  // (no Review modal open). Keeps the Schedule modal hidden behind the
+  // decline confirmation and lets "No" clear the selection.
+  const [rowDecline, setRowDecline] = useState(false);
+
+  // True when the decline confirmation was opened from the "Not the
+  // Owner" button (changes the wording and the reason sent).
+  const [notOwnerDecline, setNotOwnerDecline] = useState(false);
+
+  // Claim currently being approved from a Needs Attention row.
+  const [approvingId, setApprovingId] = useState(null);
+
+  // The Review modal has the fresh full item record (`fullItem`), so the
+  // mismatch check uses it for the most accurate answer comparison.
+  const declineHasMismatch =
+    !!selected && countMismatches(selected, fullItem) > 0;
+  const declineReason = declineHasMismatch ? AUTO_DECLINE_REASON : GENERIC_DECLINE_REASON;
+
   const [search, setSearch] = useState("");
 
-  // Which table is currently visible — "attention" (default) or
-  // "scheduled". Replaces the old always-visible two-stacked-tables
-  // layout with a single table switched by the pill toggle below.
+  // "Manage Slots" calendar + the upcoming disabled days/slots (used to
+  // hide them in the Schedule modal's time picker).
+  const [showManageSlots, setShowManageSlots] = useState(false);
+  const [blockedSlots, setBlockedSlots] = useState([]);
+
+  // Which table is currently visible — "attention" (default: Pending
+  // claims), "resolved" (Scheduled + Approved claims) or "declined"
+  // (claims staff has declined).
   const [activeTab, setActiveTab] = useState("attention");
 
-  const [scheduledPage, setScheduledPage] = useState(1);
+  const [resolvedPage, setResolvedPage] = useState(1);
   const [attentionPage, setAttentionPage] = useState(1);
+  const [declinedPage, setDeclinedPage] = useState(1);
+  // Declined tab filter: "all" | "mismatch" | "notOwner" | "other".
+  const [declineFilter, setDeclineFilter] = useState("all");
 
   const [notification, setNotification] = useState(null);
 
-  // Preset schedule management
-  const [schedules, setSchedules] = useState([]);
-  const [showScheduleManager, setShowScheduleManager] = useState(false);
-  const [addingSlots, setAddingSlots] = useState(false);
-
-  // Batch slot selection
-  const [selectedDates, setSelectedDates] = useState([]);
-  const [tempDate, setTempDate] = useState("");
-  const [selectedTimes, setSelectedTimes] = useState([]);
-
-  // FIX: the last slot used to read "4:00 AM - 5:00 AM", which broke
-  // the natural 1PM -> 4PM afternoon sequence above it (and duplicated
-  // the AM block instead of continuing into the evening). Corrected to
-  // "4:00 PM - 5:00 PM" so the default time options — used both here in
-  // "Manage Slots" and as the Schedule modal's fallback list when no
-  // staff-configured slots exist for a date — are in the right order
-  // and actually represent a real afternoon slot.
+  // Fixed set of bookable time slots.
   const TIME_OPTIONS = [
     "8:00 AM - 9:00 AM",
     "9:00 AM - 10:00 AM",
@@ -398,23 +611,41 @@ const ClaimRequests = () => {
     "4:00 PM - 5:00 PM",
   ];
 
+  // Upcoming days / time slots staff disabled in Manage Slots.
+  const loadBlockedSlots = async () => {
+    try {
+      const data = await getBlockedSlots();
+      setBlockedSlots(Array.isArray(data) ? data : []);
+    } catch (err) {
+      console.error("Failed to load disabled slots:", err);
+    }
+  };
+
+  // Whole-day block for a date, or the block covering date + time slot.
+  const findBlock = (date, time) => {
+    const day = String(date || "").slice(0, 10);
+    if (!day) return null;
+    const onDay = blockedSlots.filter((b) => String(b.date).slice(0, 10) === day);
+    return onDay.find((b) => !b.time_slot) || (time ? onDay.find((b) => b.time_slot === time) : null) || null;
+  };
+  const isWholeDayBlocked = (date) => !!findBlock(date, null);
+
   useEffect(() => {
     load();
-    loadSchedules();
+    loadBlockedSlots();
 
     // A claimant can submit a new claim from the public board's
-    // ClaimModal at any time — that submission already carries the
-    // meeting_date/meeting_time they requested (or leaves it blank if
-    // mismatched/unverified). Poll in the background (same 5s interval
-    // PublicBoard.jsx uses for items) so both tables below pick up new/
-    // updated claims without a manual refresh — a claim that comes in
-    // mismatched lands straight in the "Needs Attention" table on the
-    // very next tick, same as a cleanly-scheduled one lands in
-    // "Scheduled Meetings". `silent` keeps this from flashing the
-    // full-page loading spinner over the tables — or over an open
-    // Review/Schedule modal — on every tick.
+    // ClaimModal at any time. Poll in the background (same 5s interval
+    // PublicBoard.jsx uses for items) so all tabs pick up new/updated
+    // claims without a manual refresh. `silent` keeps this from
+    // flashing the full-page loading spinner over the tables — or over
+    // an open Review/Schedule modal — on every tick.
+    //
+    // This poll is also what makes a claim disappear from the tables
+    // shortly after its item is marked "Claimed" over in Found Items.
     const interval = setInterval(() => {
       load(true);
+      loadBlockedSlots();
     }, 5000);
 
     return () => clearInterval(interval);
@@ -427,19 +658,15 @@ const ClaimRequests = () => {
 
   // `silent`: when true, skips the loading spinner and error toast so
   // background polling doesn't disrupt whatever the staff member is
-  // currently doing (e.g. reviewing a claim, scheduling a meeting).
+  // currently doing.
   //
-  // FIX: getClaims() can return either a plain array or a DRF-paginated
-  // object ({ count, next, previous, results: [...] }) depending on the
-  // backend's pagination settings for the claim/ viewset. The old code
-  // did `setClaims(data || [])` assuming a plain array — if the backend
-  // is paginated, `claims` ended up holding the wrapper OBJECT instead
-  // of the list, and every render's `[...claims].sort(...)` below would
-  // either throw or silently misbehave. That meant a claim newly
-  // submitted via ClaimModal.jsx could never appear in either table, no
-  // matter how many times the 5s poll fired, because `claims` was never
-  // actually the array being filtered/rendered. Normalizing both shapes
-  // here (same approach fetchFullItem already uses below) fixes it.
+  // getClaims() can return either a plain array or a DRF-paginated
+  // object ({ count, next, previous, results: [...] }). Both shapes are
+  // normalized here so `claims` is always an array.
+  //
+  // The result is passed through mergeDeclinedStore() so claims staff
+  // has declined always end up in the Declined tab, even if the backend
+  // doesn't persist/return the "Declined" status.
   const load = async (silent = false) => {
     try {
       if (!silent) setLoading(true);
@@ -451,7 +678,7 @@ const ClaimRequests = () => {
         ? response.results
         : [];
 
-      setClaims(data);
+      setClaims(mergeDeclinedStore(data));
     } catch (err) {
       console.error(err);
       if (!silent) showNotification("Failed to load claim requests", "error");
@@ -460,116 +687,10 @@ const ClaimRequests = () => {
     }
   };
 
-  const loadSchedules = async () => {
-    try {
-      const data = await getAvailableSchedules();
-      setSchedules(data || []);
-    } catch (err) {
-      console.error("Failed to load schedules", err);
-    }
-  };
-
-  // --- Batch slot creation ---
-  const handleAddDate = () => {
-    if (!tempDate) return;
-    if (selectedDates.includes(tempDate)) {
-      showNotification("Date already added to list", "error");
-      return;
-    }
-    setSelectedDates([...selectedDates, tempDate]);
-    setTempDate("");
-  };
-
-  const handleRemoveDate = (dateToRemove) => {
-    setSelectedDates(selectedDates.filter((d) => d !== dateToRemove));
-  };
-
-  const toggleTimeSlot = (time) => {
-    setSelectedTimes((prev) =>
-      prev.includes(time) ? prev.filter((t) => t !== time) : [...prev, time]
-    );
-  };
-
-  const toggleAllTimes = () => {
-    setSelectedTimes((prev) =>
-      prev.length === TIME_OPTIONS.length ? [] : [...TIME_OPTIONS]
-    );
-  };
-
-  const handleAddScheduleSlotsBatch = async () => {
-    if (selectedDates.length === 0) {
-      showNotification("Please select at least one date", "error");
-      return;
-    }
-    if (selectedTimes.length === 0) {
-      showNotification("Please select at least one time slot", "error");
-      return;
-    }
-
-    try {
-      setAddingSlots(true);
-
-      const requests = [];
-      selectedDates.forEach((date) => {
-        selectedTimes.forEach((time_slot) => {
-          requests.push(createAvailableSchedule({ date, time_slot }));
-        });
-      });
-
-      await Promise.allSettled(requests);
-
-      try {
-        await logActivity({
-          action: "Batch Schedule Creation",
-          details: `Created ${requests.length} slot combinations for ${selectedDates.length} date(s)`,
-        });
-      } catch (logErr) {
-        console.error("Activity log error:", logErr);
-      }
-
-      showNotification(
-        `Successfully processed ${requests.length} slot combinations!`,
-        "success"
-      );
-
-      setSelectedDates([]);
-      setSelectedTimes([]);
-      setTempDate("");
-      await loadSchedules();
-    } catch (err) {
-      showNotification("Failed to add some schedule slots", "error");
-    } finally {
-      setAddingSlots(false);
-    }
-  };
-
-  const handleDeleteScheduleSlot = async (id) => {
-    try {
-      await deleteAvailableSchedule(id);
-      try {
-        await logActivity({
-          action: "Delete Schedule Slot",
-          details: `Deleted slot ID: ${id}`,
-        });
-      } catch (logErr) {
-        console.error("Activity log error:", logErr);
-      }
-
-      showNotification("Slot removed successfully", "success");
-      await loadSchedules();
-    } catch (err) {
-      showNotification("Failed to remove slot", "error");
-    }
-  };
-
   // --- Review -> Schedule flow ---
 
   // Fetches the full item record for a claim, same call FoundItems.jsx
-  // uses when opening its Edit modal (getItemById). This is what
-  // guarantees the Answer Comparison panel has the real
-  // verification_answer_N values to compare against, rather than
-  // relying on whatever (possibly trimmed) item payload came bundled
-  // with the claim from getClaims().
+  // uses when opening its Edit modal (getItemById).
   const fetchFullItem = async (claim) => {
     const itemId =
       claim?.item_details?.id ??
@@ -599,23 +720,213 @@ const ClaimRequests = () => {
     }
   };
 
+  // Opens the Review modal. For a DECLINED claim (opened from the
+  // Declined tab's Action column) the modal is read-only: staff can see
+  // the claimant's answers next to the recorded answers, but there are
+  // no Approve/Decline/Schedule controls — a decline is final.
   const openReview = (claim) => {
     setSelected(claim);
     setShowReview(true);
     setFullItem(null);
+    // Restore from the claim's own persisted flag rather than always
+    // resetting to false. A claim that isn't in "Needs Attention"
+    // (Scheduled / Approved) is treated as already decided, so opening
+    // it from the Schedule Meeting tab skips Approve/Decline and shows
+    // "Continue to Schedule" instead.
+    setApprovedMismatch(isMismatchApproved(claim) || !needsAttention(claim));
     fetchFullItem(claim);
   };
+
+  // ----------------------------------------------------------
+  // OPEN A CLAIM FROM THE DASHBOARD CALENDAR
+  // Dashboard.jsx navigates here with state { openClaimId }. Once the
+  // claims are loaded, switch to the tab that claim lives in and open
+  // its Claim Verification window.
+  // ----------------------------------------------------------
+  const location = useLocation();
+  const pendingOpenClaimRef = useRef(location.state?.openClaimId ?? null);
+
+  useEffect(() => {
+    if (location.state?.openClaimId != null) {
+      pendingOpenClaimRef.current = location.state.openClaimId;
+      navigate(location.pathname, { replace: true, state: null });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.state]);
+
+  useEffect(() => {
+    const wanted = pendingOpenClaimRef.current;
+    if (wanted == null || !claims.length) return;
+    const claim = claims.find((cl) => String(getClaimId(cl)) === String(wanted));
+    pendingOpenClaimRef.current = null;
+    if (!claim) {
+      showNotification("That claim could not be found.", "error");
+      return;
+    }
+    if (isDeclined(claim)) setActiveTab("declined");
+    else setActiveTab(needsAttention(claim) ? "attention" : "resolved");
+    openReview(claim);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [claims]);
 
   const closeReview = () => {
     setShowReview(false);
     setSelected(null);
     setFullItem(null);
+    setRowDecline(false);
+    setApprovedMismatch(false);
   };
 
   const continueToSchedule = () => {
+    // A declined claim can never be scheduled.
+    if (selected && isDeclined(selected)) return;
+
+    // Guard in addition to the disabled button below — a flagged claim
+    // never reaches the Schedule step unless staff has explicitly
+    // approved it via handleApprove.
+    if (countMismatches(selected, fullItem) > 0 && !approvedMismatch) {
+      showNotification(
+        "Scheduling is unavailable while an answer doesn't match the recorded answer.",
+        "error"
+      );
+      return;
+    }
+
     setShowReview(false);
     setMeetingDate(selected?.meeting_date || "");
     setMeetingTime(selected?.meeting_time || "");
+  };
+
+  // Staff override for a flagged claim: acknowledges the mismatch and
+  // moves straight on to the Schedule step anyway.
+  //
+  // NOTE: continuing alone doesn't persist anything — the claim only
+  // becomes "Approved" once staff confirms in the Schedule modal (see
+  // send() below), which is what actually writes
+  // staff_approved_despite_mismatch to the backend.
+  const handleApprove = () => {
+    setApprovedMismatch(true);
+    setShowReview(false);
+    setMeetingDate(selected?.meeting_date || "");
+    setMeetingTime(selected?.meeting_time || "");
+  };
+
+  // Rejects a claim outright instead of scheduling a meeting for it.
+  // Only available from the Review modal's Decline button (uses
+  // `selected`). The claim then shows up in the Declined tab.
+  //
+  // ASSUMPTION: api.js exposes a `declineClaim(id, remarks)` helper that
+  // persists the claim's `status` as "Declined" (see isDeclined above).
+  //
+  // Even if it doesn't, the claim is (1) updated in local state right
+  // away and (2) remembered in the local declined store, so it appears
+  // in the Declined tab immediately and stays there across refreshes.
+  const handleDecline = async () => {
+    if (!selected) return;
+
+    const remarks = notOwnerDecline ? NOT_OWNER_REASON : declineReason;
+
+    const targetId = getClaimId(selected);
+    if (!targetId) {
+      showNotification("Error: Invalid or missing Claim ID", "error");
+      return;
+    }
+
+    try {
+      setDeclining(true);
+      await declineClaim(targetId, remarks, notOwnerDecline ? { not_owner: true } : {});
+
+      // Snapshot of the claim as it should look once declined.
+      const declinedSnapshot = {
+        ...selected,
+        status: "Declined",
+        decline_reason: remarks,
+        decline_date: new Date().toISOString(),
+        not_owner: notOwnerDecline,
+      };
+
+      saveDeclinedClaim(targetId, declinedSnapshot);
+
+      // Optimistic update so the Declined tab reflects it instantly,
+      // before the next getClaims() round trip.
+      setClaims((prev) => {
+        const exists = prev.some((c) => String(getClaimId(c)) === String(targetId));
+        return exists
+          ? prev.map((c) =>
+              String(getClaimId(c)) === String(targetId) ? declinedSnapshot : c
+            )
+          : [...prev, declinedSnapshot];
+      });
+
+      try {
+        await logActivity({
+          action: notOwnerDecline ? "Not the Owner" : "Decline Claim",
+          details: `Declined claim for ${selected.claimant_name || "claimant"}: ${remarks}`,
+        });
+      } catch (logErr) {
+        console.error("Activity log error:", logErr);
+      }
+
+      showNotification(
+        notOwnerDecline ? "Claim marked as not the owner." : "Claim declined.",
+        "success"
+      );
+      setNotOwnerDecline(false);
+      closeReview();
+      await load();
+    } catch (err) {
+      console.error(err);
+      showNotification("Failed to decline claim", "error");
+    } finally {
+      setDeclining(false);
+    }
+  };
+
+  // ==========================================================
+  // NEEDS ATTENTION ROW ACTIONS
+  // ==========================================================
+
+  // Decline straight from the row: asks for confirmation first (same
+  // confirmation modal and automatic reason as the Review modal).
+  const declineFromRow = (claim) => {
+    setSelected(claim);
+    setShowReview(false);
+    setFullItem(null);
+    setRowDecline(true);
+    setShowDeclineConfirm(true);
+    fetchFullItem(claim);
+  };
+
+  const cancelDecline = () => {
+    setShowDeclineConfirm(false);
+    setNotOwnerDecline(false);
+    if (rowDecline) {
+      setSelected(null);
+      setFullItem(null);
+      setRowDecline(false);
+    }
+  };
+
+  // Approve (row or Claim Verification modal) NEVER schedules on its own.
+  // It opens the Schedule step ("Continue to Schedule"), pre-filled with
+  // the slot the claimant requested, so staff confirm the date and time
+  // there. Only after Confirm Schedule (send()) is the claim marked
+  // "Scheduled by Staff" — and only then do Not the Owner / Review show.
+  const approveFromRow = (claim) => {
+    if (isDeclined(claim)) return;
+    setSelected(claim);
+    setShowReview(false);
+    setFullItem(null);
+    setApprovedMismatch(true);
+    setMeetingDate(claim?.meeting_date || "");
+    setMeetingTime(claim?.meeting_time || "");
+    fetchFullItem(claim);
+  };
+
+  // Approve button inside the Claim Verification modal.
+  const approveFromModal = () => {
+    if (!selected) return;
+    handleApprove();
   };
 
   const backToReview = () => {
@@ -625,15 +936,62 @@ const ClaimRequests = () => {
   const send = async () => {
     if (!selected) return;
 
+    // A declined claim can never be scheduled.
+    if (isDeclined(selected)) return;
+
     // Support flexible ID lookups across MongoDB / PostgreSQL formats
-    const targetId = selected.id || selected._id || selected.claim_id;
+    const targetId = getClaimId(selected);
     if (!targetId) {
       showNotification("Error: Invalid or missing Claim ID", "error");
       return;
     }
 
-    if (!meetingDate || !meetingTime) {
+    // MISMATCH BLOCKS SCHEDULING — unless staff has explicitly approved
+    // the flagged claim via handleApprove (see approvedMismatch state).
+    // Final backstop behind the disabled Confirm button.
+    if (countMismatches(selected, fullItem) > 0 && !approvedMismatch) {
+      showNotification(
+        "Scheduling is blocked — this claim has mismatched answers.",
+        "error"
+      );
+      return;
+    }
+
+    // DATE/TIME ARE LOCKED: when the claimant already requested a slot,
+    // admins and moderators can't change it — always send the claim's
+    // own meeting_date / meeting_time. Only a claim with no slot at all
+    // (legacy "Awaiting Slot") uses the date/time picked in the modal.
+    // Exception: if staff disabled the requested slot in Manage Slots,
+    // a new slot has to be picked.
+    const slotLocked = !isPendingReview(selected) && !requestedSlotBlocked;
+    const finalDate = slotLocked ? selected.meeting_date : meetingDate;
+    const finalTime = slotLocked ? selected.meeting_time : meetingTime;
+
+    if (!finalDate || !finalTime) {
       showNotification("Please select both a date and a time slot", "error");
+      return;
+    }
+
+    if (findBlock(finalDate, finalTime)) {
+      showNotification("That slot is disabled in Manage Slots — please pick another one.", "error");
+      return;
+    }
+
+    // Only a claim that actually has flagged answers AND was approved
+    // counts as "Approved"; a clean claim is simply "Scheduled".
+    const isApprovedMismatch =
+      approvedMismatch && countMismatches(selected, fullItem) > 0;
+
+    // Remember whether this was an approve-despite-mismatch confirm so
+    // we can jump to the "Schedule Meeting" tab after it succeeds.
+    const wasApprovedMismatch = isApprovedMismatch;
+
+    if (
+      !(await confirmAction({
+        message: `Confirm the verification meeting on ${finalDate} (${finalTime}) for ${selected.claimant_name || "this claimant"}?`,
+        confirmLabel: "Confirm Meeting",
+      }))
+    ) {
       return;
     }
 
@@ -642,26 +1000,26 @@ const ClaimRequests = () => {
 
       // `staff_scheduled: true` marks this meeting as explicitly
       // confirmed by a moderator/admin through this Review → Schedule →
-      // Confirm flow — as opposed to a claimant self-picking their own
-      // slot during initial submission (ClaimModal.jsx, when their
-      // verification answers matched). Dashboard.jsx's ClaimScheduleCalendar
-      // filters on this flag so it only highlights meetings staff has
-      // actually reviewed and locked in.
+      // Confirm flow. Dashboard.jsx's ClaimScheduleCalendar filters on
+      // this flag.
       //
-      // ASSUMPTION: the backend's scheduleMeeting endpoint/serializer
-      // accepts and persists `staff_scheduled`, and returns it on claim
-      // objects from getClaims(). If it doesn't yet, add it there (or
-      // swap this field name for whatever equivalent already exists).
+      // `needs_manual_review: false` clears the submission-time flag
+      // ClaimModal.jsx set for mismatched/unverified claims.
+      //
+      // `staff_approved_despite_mismatch: true` is only sent for an
+      // approved mismatch.
       await scheduleMeeting(targetId, {
-        meeting_date: meetingDate,
-        meeting_time: meetingTime,
+        meeting_date: finalDate,
+        meeting_time: finalTime,
         staff_scheduled: true,
+        needs_manual_review: false,
+        ...(isApprovedMismatch ? { staff_approved_despite_mismatch: true } : {}),
       });
 
       try {
         await logActivity({
           action: "Schedule Verification Meeting",
-          details: `Scheduled meeting for ${selected.claimant_name || "claimant"} on ${meetingDate} at ${meetingTime}`,
+          details: `Scheduled meeting for ${selected.claimant_name || "claimant"} on ${finalDate} at ${finalTime}`,
         });
       } catch (logErr) {
         console.error("Activity log error:", logErr);
@@ -672,6 +1030,14 @@ const ClaimRequests = () => {
       setMeetingDate("");
       setMeetingTime("");
       await load();
+
+      // The confirmed claim stays in the Schedule Meeting table, now
+      // marked "Scheduled by Staff" — switch there so staff can see it.
+      if (wasApprovedMismatch || activeTab !== "resolved") {
+        setActiveTab("resolved");
+        setResolvedPage(1);
+      }
+      setApprovedMismatch(false);
 
       showNotification("Meeting scheduled successfully!", "success");
     } catch (err) {
@@ -706,86 +1072,136 @@ const ClaimRequests = () => {
     String(c.claimant_contact || "").toLowerCase().includes(searchText);
 
   // ==========================================================
-  // TWO SEPARATE BUCKETS
+  // ALREADY-CLAIMED ITEMS ARE EXCLUDED — DECLINED CLAIMS GET THEIR OWN TAB
   //
-  // Claims are split into two buckets — only one is shown at a time,
-  // switched via the pill toggle in the header:
-  //   - scheduledClaims: has a meeting_date & meeting_time already set
-  //     (claimant-picked because their answers matched, or staff set
-  //     one manually from the Needs Attention table).
-  //   - attentionClaims: isPendingReview (no schedule yet) and/or
-  //     hasMismatch (an answer was flagged) — these are NOT mutually
-  //     exclusive with scheduledClaims. A claim staff already scheduled
-  //     despite a flagged mismatch shows up in BOTH buckets, with a
-  //     mismatch badge in the Scheduled table and a "Scheduled" note in
-  //     the Needs Attention table, so nothing silently drops off staff's
-  //     radar either way — it's just one tab away instead of stacked.
+  // A claim whose item was already marked "Claimed" (e.g. by hand via
+  // FoundItems.jsx) is resolved outside this flow entirely, so it's
+  // dropped from the Needs Attention and Schedule Meeting tabs.
+  //
+  // Declined claims are excluded from those two tabs too, and are
+  // listed in the Declined tab instead (see declinedClaims below).
   // ==========================================================
+  // Claims whose meeting date was 3+ days ago are auto-archived and
+  // shown under Archive -> Scheduled Meetings instead (see
+  // utils/claimArchive.js).
+  const visibleClaims = sortedClaims.filter(
+    (c) => !isItemAlreadyClaimed(c) && !isDeclined(c) && !isClaimAutoArchived(c)
+  );
 
-  const scheduledClaims = sortedClaims.filter((c) => !isPendingReview(c) && matchesSearch(c));
-  const attentionClaims = sortedClaims.filter((c) => needsAttention(c) && matchesSearch(c));
+  // ==========================================================
+  // THREE TABS
+  //
+  //   - attentionClaims (status: Pending) — no schedule yet, or a
+  //     flagged mismatch staff hasn't approved/declined yet.
+  //   - resolvedClaims (status: Scheduled or Approved) — everything
+  //     else that isn't declined.
+  //   - declinedClaims (status: Declined) — claims staff rejected.
+  // ==========================================================
+  const resolvedClaims = visibleClaims.filter((c) => !needsAttention(c) && matchesSearch(c));
+  const attentionClaims = visibleClaims.filter((c) => needsAttention(c) && matchesSearch(c));
+  // Includes claims declined with "Not the Owner" — no separate tab.
+  const allDeclinedClaims = sortedClaims.filter((c) => isDeclined(c) && matchesSearch(c));
+  const declineCounts = allDeclinedClaims.reduce(
+    (acc, c) => {
+      acc[getDeclineCategory(c)] += 1;
+      return acc;
+    },
+    { mismatch: 0, notOwner: 0, other: 0 }
+  );
+  const declinedClaims =
+    declineFilter === "all"
+      ? allDeclinedClaims
+      : allDeclinedClaims.filter((c) => getDeclineCategory(c) === declineFilter);
 
-  const scheduledTotalPages = Math.ceil(scheduledClaims.length / ITEMS_PER_PAGE) || 1;
+  const resolvedTotalPages = Math.ceil(resolvedClaims.length / ITEMS_PER_PAGE) || 1;
   const attentionTotalPages = Math.ceil(attentionClaims.length / ITEMS_PER_PAGE) || 1;
+  const declinedTotalPages = Math.ceil(declinedClaims.length / ITEMS_PER_PAGE) || 1;
 
-  const scheduledStart = (scheduledPage - 1) * ITEMS_PER_PAGE;
+  const resolvedStart = (resolvedPage - 1) * ITEMS_PER_PAGE;
   const attentionStart = (attentionPage - 1) * ITEMS_PER_PAGE;
+  const declinedStart = (declinedPage - 1) * ITEMS_PER_PAGE;
 
-  const paginatedScheduled = scheduledClaims.slice(scheduledStart, scheduledStart + ITEMS_PER_PAGE);
+  const paginatedResolved = resolvedClaims.slice(resolvedStart, resolvedStart + ITEMS_PER_PAGE);
   const paginatedAttention = attentionClaims.slice(attentionStart, attentionStart + ITEMS_PER_PAGE);
+  const paginatedDeclined = declinedClaims.slice(declinedStart, declinedStart + ITEMS_PER_PAGE);
 
   const todayDate = new Date().toLocaleDateString("en-CA");
 
-  // Format ISO or timestamp date strings to YYYY-MM-DD for comparison
-  const availableTimesForSelectedDate = schedules
-    .filter((s) => {
-      if (!s.date) return false;
-      const slotDate = s.date.includes("T") ? s.date.split("T")[0] : s.date;
-      return slotDate === meetingDate && s.is_active !== false;
-    })
-    .map((s) => s.time_slot);
-
   // Per-question comparison for whichever claim is currently open in the
-  // Review modal (and reused in the Schedule modal below). Computed
-  // here (not stored in state) so it always reflects the latest
-  // `selected` claim without an extra effect.
+  // Review modal (and reused in the Schedule modal below).
   const answerComparison = buildAnswerComparison(selected, fullItem);
   const selectedMismatchCount = answerComparison.filter((a) => a.isMatch === false).length;
 
+  // True when the claim open in the Review modal was declined — the
+  // modal is then a read-only record (no Approve/Decline/Schedule).
+  const selectedIsDeclined = !!selected && isDeclined(selected);
+
+  // Any flagged answer disables the whole scheduling path UNLESS staff
+  // has explicitly approved the flagged claim via handleApprove. Never
+  // applies to a declined claim (nothing to decide any more).
+  const schedulingBlocked =
+    !selectedIsDeclined && selectedMismatchCount > 0 && !approvedMismatch;
+
   // True when the claim currently open in the Review/Schedule modals
-  // already has a meeting_date & meeting_time set — i.e. it's already
-  // scheduled (either by the claimant themselves, or by staff on a
-  // previous pass). Used to warn staff before they re-confirm and
-  // silently overwrite an existing appointment.
+  // already has a meeting_date & meeting_time set (the claimant's
+  // requested slot). In that case the date and time are LOCKED — staff
+  // can only confirm them, not edit them.
   const selectedAlreadyScheduled = !!selected && !isPendingReview(selected);
 
-  // True when the item behind the claim currently open in the Review/
-  // Schedule modals has already been marked "Claimed" directly from
-  // Found Items — i.e. this claim request is very likely stale/resolved
-  // already, outside of this screen entirely.
+  // The claimant's requested slot was disabled in Manage Slots after
+  // they booked it — staff must pick a new slot instead of confirming.
+  const requestedSlotBlock = selectedAlreadyScheduled
+    ? findBlock(selected.meeting_date, selected.meeting_time)
+    : null;
+  const requestedSlotBlocked = !!requestedSlotBlock;
+
+  // Meetings already booked (for the "N booked" counts in Manage Slots).
+  const bookedClaims = claims.filter(
+    (c) =>
+      c.meeting_date &&
+      c.meeting_time &&
+      !isDeclined(c) &&
+      ["pending", "scheduled", "approved"].includes(normalize(c.status))
+  );
+
+  // True when the item behind the open claim has already been marked
+  // "Claimed" directly from Found Items.
   const selectedItemAlreadyClaimed = isItemAlreadyClaimed(selected, fullItem);
 
-  // Shared row renderer for both tables — keeps the two markup blocks
-  // in sync instead of drifting apart over edits. `variant` controls
-  // which column the second badge/status cell shows.
-  const renderClaimRow = (c, index, variant) => {
+  // Reason shown for a declined claim in the Review modal banner.
+  const selectedDeclineCategory = selectedIsDeclined ? getDeclineCategory(selected) : null;
+  const selectedDeclineReason =
+    selected?.decline_reason ||
+    selected?.remarks ||
+    (selectedDeclineCategory === "notOwner"
+      ? NOT_OWNER_REASON
+      : selectedDeclineCategory === "mismatch"
+      ? AUTO_DECLINE_REASON
+      : GENERIC_DECLINE_REASON);
+
+  // Shared row renderer for the Needs Attention and Schedule Meeting tabs.
+  // The Action column only has "Review" — Decline lives inside the
+  // Review modal.
+  const renderClaimRow = (c, index) => {
     const pending = isPendingReview(c);
-    const itemClaimed = isItemAlreadyClaimed(c);
+    // A slot exists, but it's still just the claimant's REQUEST — one or
+    // more answers were flagged and staff hasn't Approved/Declined yet.
+    const mismatchUnapproved =
+      !pending && hasMismatch(c) && !isMismatchApproved(c);
 
     return (
-      <tr key={c.id || c._id || index} className={`h-[56px] ${index % 2 === 0 ? "bg-white" : "bg-[#F6FAFF]"} hover:bg-[#EAF4FF]`}>
+      <tr key={getClaimId(c) || index} className={`h-[56px] ${index % 2 === 0 ? "bg-white" : "bg-[#F6FAFF]"} hover:bg-[#EAF4FF]`}>
         <td className="border border-gray-300 p-4 text-center align-middle font-bold text-[#0B6B8A] text-[13px]">
-          <span className="inline-flex flex-col items-center gap-1">
-            <span>{c.claimant_name || "N/A"}</span>
-            {itemClaimed && (
-              <span
-                title="This item was already marked Claimed directly from Found Items — this claim is likely stale"
-                className="inline-flex items-center gap-1 rounded-full bg-purple-100 px-2 py-0.5 text-[9px] font-bold uppercase text-purple-600"
-              >
-                Item Already Claimed
-              </span>
-            )}
-          </span>
+          {c.claimant_name || "N/A"}
+          {missedMeetings(c) > 0 && (
+            <span
+              title="This claimant missed earlier verification meetings for this item. After 3, they must claim in person."
+              className="mt-1 mx-auto flex w-fit items-center gap-1 rounded-full bg-orange-100 px-2.5 py-0.5 text-[10px] font-bold uppercase text-orange-700"
+            >
+              <FiAlertTriangle size={11} />
+              {missedLabel(missedMeetings(c))}
+            </span>
+          )}
         </td>
         <td className="border border-gray-300 p-4 text-center align-middle text-slate-700 text-[13px]">{c.claimant_email || "N/A"}</td>
         <td className="border border-gray-300 p-4 text-center align-middle text-slate-700 text-[13px]">{c.claimant_contact || "—"}</td>
@@ -795,25 +1211,117 @@ const ClaimRequests = () => {
               title="Submitted with no claimant-picked meeting slot — needs staff review first"
               className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2.5 py-1 text-[10px] font-bold uppercase text-blue-700"
             >
-              Pending Review
+              Awaiting Slot
+            </span>
+          ) : mismatchUnapproved ? (
+            <span className="inline-flex flex-col items-center gap-1">
+              <span
+                title="Claimant requested this slot, but an answer doesn't match our records — needs Approve or Decline"
+                className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2.5 py-1 text-[10px] font-bold uppercase text-red-700"
+              >
+                <FiAlertTriangle size={11} />
+                Needs Review
+              </span>
+              <span className="text-[11px] font-semibold text-slate-500">
+                {c.meeting_date} ({c.meeting_time}) requested
+              </span>
             </span>
           ) : (
             <span className="inline-flex flex-col items-center gap-1">
               <span className="text-[#0B6B8A] font-semibold">{`${c.meeting_date} (${c.meeting_time})`}</span>
-              {variant === "attention" && (
-                <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[9px] font-bold uppercase text-emerald-700">
-                  Already Scheduled
+              {isStaffScheduled(c) ? (
+                <span
+                  title="An admin or moderator already confirmed this meeting"
+                  className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2.5 py-0.5 text-[10px] font-bold uppercase text-emerald-700"
+                >
+                  <FiCheck size={11} />
+                  Scheduled by Staff
+                </span>
+              ) : (
+                <span
+                  title="The claimant picked this slot — not confirmed by staff yet"
+                  className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2.5 py-0.5 text-[10px] font-bold uppercase text-amber-700"
+                >
+                  Awaiting Confirmation
                 </span>
               )}
             </span>
           )}
         </td>
         <td className="border border-gray-300 p-2 text-center align-middle">
+            <div className="flex items-center justify-center gap-1.5">
+              {isStaffScheduled(c) ? (
+                // Already confirmed by an admin/moderator: the button reads
+                // "Scheduled" (still opens the details).
+                <button
+                  onClick={() => openReview(c)}
+                  title="Meeting already scheduled by staff — view details"
+                  aria-label="Scheduled — view details"
+                  className="inline-flex h-9 px-3 items-center gap-1.5 rounded bg-emerald-600 text-xs font-bold text-white hover:bg-emerald-700 transition-colors"
+                >
+                  <FiCheck size={16} />
+                  <span>Scheduled</span>
+                </button>
+              ) : (
+                <button
+                  onClick={() => openReview(c)}
+                  title="Review Claim"
+                  aria-label="Review Claim"
+                  className="inline-flex h-9 px-3 items-center gap-1.5 rounded bg-[#0B6B8A] text-xs font-bold text-white hover:bg-[#095A74] transition-colors"
+                >
+                  <FiEye size={16} />
+                  <span>Review</span>
+                </button>
+              )}
+            </div>
+        </td>
+      </tr>
+    );
+  };
+
+  // Row renderer for the Declined tab. Declined claims are final, so the
+  // Action column only offers "Review" — it opens the same Review modal
+  // in read-only mode.
+  const renderDeclinedRow = (c, index) => {
+    const itemTitle =
+      c.item_details?.title ||
+      c.item_title ||
+      c.item?.title ||
+      (c.item ? `Item #${c.item}` : "—");
+
+    const ticketCode = c.item_details?.ticket_code || c.item?.ticket_code || null;
+
+    // ASSUMPTION: no dedicated "declined at" timestamp is confirmed on
+    // the claim model yet — falls back to whatever's available.
+    const declinedDate = c.declined_at || c.decline_date || c.updated_at || c.claim_date || null;
+    const category = getDeclineCategory(c);
+
+    return (
+      <tr key={getClaimId(c) || index} className={`h-[56px] ${index % 2 === 0 ? "bg-white" : "bg-[#F6FAFF]"} hover:bg-[#EAF4FF]`}>
+        <td className="border border-gray-300 p-4 text-center align-middle font-bold text-[#0B6B8A] text-[13px]">
+          {c.claimant_name || "N/A"}
+        </td>
+        <td className="border border-gray-300 p-4 text-center align-middle text-slate-700 text-[13px]">{c.claimant_email || "N/A"}</td>
+        <td className="border border-gray-300 p-4 text-center align-middle text-slate-700 text-[13px]">{c.claimant_contact || "—"}</td>
+        <td className="border border-gray-300 p-4 text-center align-middle text-slate-700 text-[13px]">
+          <span className="block font-semibold">{itemTitle}</span>
+          {ticketCode && <span className="block text-xs text-slate-400">{ticketCode}</span>}
+        </td>
+        <td className="border border-gray-300 p-4 text-center align-middle">
+          <span className="inline-flex items-center gap-1 text-[13px] font-semibold text-slate-700">
+            {category === "notOwner" ? <FiUserX size={12} /> : <FiX size={12} />}
+            {DECLINE_CATEGORY_LABEL[category]}
+          </span>
+        </td>
+        <td className="border border-gray-300 p-4 text-center align-middle text-slate-700 text-[13px]">
+          {declinedDate ? new Date(declinedDate).toLocaleDateString("en-CA") : "—"}
+        </td>
+        <td className="border border-gray-300 p-2 text-center align-middle">
           <div className="flex items-center justify-center gap-1.5">
             <button
               onClick={() => openReview(c)}
-              title="Review Claim"
-              aria-label="Review Claim"
+              title="Review Answers"
+              aria-label="Review Answers"
               className="inline-flex h-9 px-3 items-center gap-1.5 rounded bg-[#0B6B8A] text-xs font-bold text-white hover:bg-[#095A74] transition-colors"
             >
               <FiEye size={16} />
@@ -826,46 +1334,43 @@ const ClaimRequests = () => {
   };
 
   const renderPagination = (page, setPage, totalPages, totalCount) => (
-    <div className="shrink-0 border-t border-[#D8E2EF] bg-slate-50 px-6 py-3 flex flex-col sm:flex-row items-center justify-between gap-3">
-      <p className="text-xs font-semibold text-[#7B8AA6]">
-        Showing {totalCount > 0 ? (page - 1) * ITEMS_PER_PAGE + 1 : 0} to{" "}
-        {Math.min(page * ITEMS_PER_PAGE, totalCount)} of {totalCount} entries
-      </p>
-      <div className="flex items-center gap-2">
-        <button
-          onClick={() => setPage((prev) => Math.max(prev - 1, 1))}
-          disabled={page === 1}
-          className="inline-flex h-8 items-center gap-1 rounded-lg border border-[#CBD8E8] bg-white px-3 text-xs font-bold text-[#071E3D] hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
-        >
-          <FiChevronLeft size={16} /> Previous
-        </button>
-        <span className="text-xs font-bold text-[#071E3D] px-2">
-          Page {page} of {totalPages}
-        </span>
-        <button
-          onClick={() => setPage((prev) => Math.min(prev + 1, totalPages))}
-          disabled={page === totalPages || totalPages === 0}
-          className="inline-flex h-8 items-center gap-1 rounded-lg border border-[#CBD8E8] bg-white px-3 text-xs font-bold text-[#071E3D] hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
-        >
-          Next <FiChevronRight size={16} />
-        </button>
-      </div>
-    </div>
+    <Pagination
+      currentPage={page}
+      totalItems={totalCount}
+      pageSize={ITEMS_PER_PAGE}
+      onPageChange={setPage}
+    />
   );
 
   // Which bucket is currently on screen, driven by the pill toggle.
   const isAttentionTab = activeTab === "attention";
-  const visibleRows = isAttentionTab ? paginatedAttention : paginatedScheduled;
-  const visibleVariant = isAttentionTab ? "attention" : "scheduled";
+  const isResolvedTab = activeTab === "resolved";
+  const isDeclinedTab = activeTab === "declined";
+
+  const visibleRows = isAttentionTab
+    ? paginatedAttention
+    : isResolvedTab
+    ? paginatedResolved
+    : paginatedDeclined;
+
   const visibleEmptyText = isAttentionTab
     ? "Nothing needs attention right now."
-    : "No scheduled meetings found.";
+    : isResolvedTab
+    ? "No scheduled meetings found."
+    : declineFilter === "all"
+    ? "No declined claims found."
+    : `No declined claims marked "${
+        declineFilter === "mismatch" ? "Mismatch" : declineFilter === "notOwner" ? "Not the Owner" : "Unable to Verify"
+      }".`;
+
   const visiblePagination = isAttentionTab
     ? renderPagination(attentionPage, setAttentionPage, attentionTotalPages, attentionClaims.length)
-    : renderPagination(scheduledPage, setScheduledPage, scheduledTotalPages, scheduledClaims.length);
+    : isResolvedTab
+    ? renderPagination(resolvedPage, setResolvedPage, resolvedTotalPages, resolvedClaims.length)
+    : renderPagination(declinedPage, setDeclinedPage, declinedTotalPages, declinedClaims.length);
 
   return (
-    <div className="flex h-full min-h-[calc(100vh-120px)] flex-col gap-6 rounded-[20px] p-0">
+    <div className="bg-white rounded-[18px] border border-[#D8E2EF] shadow-[0_8px_24px_rgba(45,54,109,0.08)] overflow-hidden flex flex-col h-[calc(100vh-135px)]">
       {/* Toast Notification */}
       {notification && (
         <div
@@ -886,40 +1391,54 @@ const ClaimRequests = () => {
       )}
 
       {/* Header + search + tab switcher */}
-      <div className="shrink-0 rounded-[20px] border border-[#D8E2EF] bg-white shadow-[0_8px_24px_rgba(45,54,109,0.06)] px-6 py-6 sm:px-8">
-        <div className="flex flex-col gap-5 xl:flex-row xl:items-center xl:justify-between">
+      <div className="bg-white px-6 sm:px-8 py-4 border-b border-[#D8E2EF] shrink-0">
+        <div className="flex flex-col xl:flex-row xl:items-center xl:justify-between gap-4">
           <div className="flex items-center gap-3.5">
             <div>
-              <h3 className="text-xl font-black uppercase tracking-[0.15em] text-[#071E3D] sm:text-2xl">
+              <h3 className="text-base sm:text-lg font-black uppercase tracking-[0.16em] text-[#071E3D]">
                 Claim Requests
               </h3>
-              <p className="mt-0.5 text-sm font-medium text-[#7B8AA6]">
+              <p className="text-xs sm:text-sm text-[#7B8AA6] italic mt-0.5">
                 Review ownership claims and schedule verification appointments.
               </p>
             </div>
           </div>
 
-          {/* Right side: search + manage slots button */}
           <div className="flex flex-wrap items-center justify-end gap-3">
-            <div className="relative w-full sm:w-[280px]">
-              <FiSearch className="absolute left-3.5 top-1/2 -translate-y-1/2 text-[#7B8AA6]" size={16} />
+            <button
+              type="button"
+              onClick={() => setShowManageSlots(true)}
+              className="inline-flex items-center gap-2 rounded-full border border-[#0B6B8A] bg-white px-4 py-2.5 text-xs font-black uppercase tracking-wide text-[#0B6B8A] hover:bg-[#EAF4FF] transition-colors"
+            >
+              <FiCalendar size={14} />
+              <span>Manage Slots</span>
+              {blockedSlots.length > 0 && (
+                <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-rose-100 px-1.5 text-[10px] font-black text-rose-600">
+                  {blockedSlots.length}
+                </span>
+              )}
+            </button>
+            <div className="relative w-full sm:w-[300px]">
+              <FiSearch className="absolute left-4 top-1/2 -translate-y-1/2 text-[#0B6B8A]" size={15} />
               <input
                 type="text"
                 value={search}
                 onChange={(e) => {
                   setSearch(e.target.value);
-                  setScheduledPage(1);
+                  setResolvedPage(1);
                   setAttentionPage(1);
+                  setDeclinedPage(1);
                 }}
                 placeholder="Search claimant..."
-                className="w-full rounded-full border border-[#CBD8E8] bg-[#F8FAFC] py-2.5 pl-9 pr-9 text-sm font-medium text-[#071E3D] outline-none focus:border-[#0B6B8A]"
+                className="w-full rounded-full border border-[#CBD8E8] bg-white py-2.5 pl-10 pr-9 text-sm text-[#071E3D] outline-none placeholder:text-[#8A98B3] focus:border-[#0B6B8A] focus:ring-2 focus:ring-[#0B6B8A]/20"
               />
               {search && (
                 <button
                   onClick={() => {
                     setSearch("");
-                    setScheduledPage(1);
+                    setResolvedPage(1);
                     setAttentionPage(1);
+                    setDeclinedPage(1);
                   }}
                   className="absolute right-3 top-1/2 -translate-y-1/2 text-[#7B8AA6] hover:text-[#071E3D]"
                   title="Clear Search"
@@ -928,27 +1447,10 @@ const ClaimRequests = () => {
                 </button>
               )}
             </div>
-
-            <button
-              onClick={() => setShowScheduleManager(true)}
-              title="Manage Available Slots"
-              aria-label="Manage Available Slots"
-              className="inline-flex h-10 px-4 items-center gap-2 rounded-xl border border-[#0B6B8A] bg-[#0B6B8A]/10 text-[#0B6B8A] text-xs font-bold transition-all hover:bg-[#0B6B8A] hover:text-white whitespace-nowrap"
-            >
-              <FiCalendar size={18} />
-              <span>Manage Slots</span>
-            </button>
           </div>
         </div>
 
-        {/* ==========================================================
-            TAB SWITCHER (pill toggle) — styled to match the Claimed /
-            Not Claimed filter buttons in FoundItems.jsx, and aligned to
-            the right side of the header (same as those buttons).
-            "Needs Attention" is the default tab since it's what staff
-            should check first. Counts stay visible on both segments so
-            nothing is out of sight just because it's not the active tab.
-        ========================================================== */}
+        {/* TAB SWITCHER (pill toggle) */}
         <div className="mt-4 flex justify-end">
           <div className="inline-flex items-center gap-1 rounded-full bg-[#F1F4F9] p-1">
             <button
@@ -973,52 +1475,126 @@ const ClaimRequests = () => {
 
             <button
               type="button"
-              onClick={() => setActiveTab("scheduled")}
+              onClick={() => setActiveTab("resolved")}
               className={`inline-flex items-center gap-2 rounded-full px-4 py-2 text-xs font-black uppercase tracking-wide transition-all ${
-                !isAttentionTab
+                isResolvedTab
                   ? "bg-white text-[#0B6B8A] shadow-sm"
                   : "text-[#7B8AA6] hover:text-[#475569]"
               }`}
             >
               <FiCalendar size={14} />
-              <span>Scheduled Meetings</span>
+              <span>Schedule Meeting</span>
               <span
                 className={`inline-flex h-5 min-w-5 items-center justify-center rounded-full px-1.5 text-[10px] font-black ${
-                  !isAttentionTab ? "bg-[#0B6B8A]/10 text-[#0B6B8A]" : "bg-white text-[#7B8AA6]"
+                  isResolvedTab ? "bg-[#0B6B8A]/10 text-[#0B6B8A]" : "bg-white text-[#7B8AA6]"
                 }`}
               >
-                {scheduledClaims.length}
+                {resolvedClaims.length}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveTab("declined")}
+              className={`inline-flex items-center gap-2 rounded-full px-4 py-2 text-xs font-black uppercase tracking-wide transition-all ${
+                activeTab === "declined"
+                  ? "bg-white text-rose-600 shadow-sm"
+                  : "text-[#7B8AA6] hover:text-[#475569]"
+              }`}
+            >
+              <FiX size={14} />
+              <span>Declined</span>
+              <span
+                className={`inline-flex h-5 min-w-5 items-center justify-center rounded-full px-1.5 text-[10px] font-black ${
+                  activeTab === "declined" ? "bg-rose-100 text-rose-600" : "bg-white text-[#7B8AA6]"
+                }`}
+              >
+                {allDeclinedClaims.length}
               </span>
             </button>
           </div>
         </div>
+
+        {/* DECLINED FILTER — Mismatch / Not the Owner */}
+        {activeTab === "declined" && (
+          <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
+            <span className="mr-1 inline-flex items-center gap-1.5 text-[11px] font-black uppercase tracking-wide text-[#7B8AA6]">
+              <FiSliders size={13} /> Filter
+            </span>
+            {[
+              { key: "all", label: "All", count: allDeclinedClaims.length },
+              { key: "mismatch", label: "Mismatch", count: declineCounts.mismatch },
+              { key: "notOwner", label: "Not the Owner", count: declineCounts.notOwner },
+              ...(declineCounts.other > 0
+                ? [{ key: "other", label: "Unable to Verify", count: declineCounts.other }]
+                : []),
+            ].map((opt) => {
+              const active = declineFilter === opt.key;
+              return (
+                <button
+                  key={opt.key}
+                  type="button"
+                  onClick={() => {
+                    setDeclineFilter(opt.key);
+                    setDeclinedPage(1);
+                  }}
+                  aria-pressed={active}
+                  className={`inline-flex items-center gap-1.5 rounded-full border px-3.5 py-1.5 text-xs font-bold transition ${
+                    active
+                      ? "border-[#0B6B8A] bg-[#0B6B8A] text-white"
+                      : "border-[#CBD8E8] bg-white text-[#475569] hover:border-[#0B6B8A]/60"
+                  }`}
+                >
+                  {opt.key === "notOwner" && <FiUserX size={12} />}
+                  {opt.key === "mismatch" && <FiAlertTriangle size={12} />}
+                  {opt.label}
+                  <span
+                    className={`inline-flex h-5 min-w-5 items-center justify-center rounded-full px-1.5 text-[10px] font-black ${
+                      active ? "bg-white/25 text-white" : "bg-[#F1F4F9] text-[#7B8AA6]"
+                    }`}
+                  >
+                    {opt.count}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
 
-      {/* =================================================
-          ACTIVE TABLE
-          Shows whichever bucket the pill toggle above selects. Rows,
-          empty state, and pagination all switch together based on
-          `activeTab` — see renderClaimRow / renderPagination above.
-          Table markup mirrors FoundItems.jsx's bordered table style.
-      ================================================= */}
-      <div className="bg-white rounded-[18px] border border-[#D8E2EF] shadow-[0_8px_24px_rgba(45,54,109,0.08)] overflow-hidden flex flex-col flex-1 min-h-0">
+      {/* ACTIVE TABLE */}
+      <div className="flex flex-col flex-1 min-h-0">
         <div className="flex-1 overflow-auto bg-white">
-          <table className="w-full min-w-[850px] table-fixed border-collapse">
+          <table className="w-full min-w-[980px] table-fixed border-collapse">
             <thead className="sticky top-0 z-10">
-              <tr>
-                <th className="w-[22%] bg-[#0B6B8A] p-4 border border-gray-300 text-center text-[11px] font-black uppercase text-white">Claimant Name</th>
-                <th className="w-[26%] bg-[#0B6B8A] p-4 border border-gray-300 text-center text-[11px] font-black uppercase text-white">Email Address</th>
-                <th className="w-[18%] bg-[#0B6B8A] p-4 border border-gray-300 text-center text-[11px] font-black uppercase text-white">Contact Number</th>
-                <th className="w-[22%] bg-[#0B6B8A] p-4 border border-gray-300 text-center text-[11px] font-black uppercase text-white">Scheduled Date/Time</th>
-                <th className="w-[12%] bg-[#0B6B8A] p-4 border border-gray-300 text-center text-[11px] font-black uppercase text-white">Action</th>
-              </tr>
+              {isDeclinedTab ? (
+                <tr>
+                  <th className="w-[17%] bg-[#0B6B8A] p-4 border border-gray-300 text-center text-[11px] font-black uppercase text-white">Claimant Name</th>
+                  <th className="w-[20%] bg-[#0B6B8A] p-4 border border-gray-300 text-center text-[11px] font-black uppercase text-white">Email Address</th>
+                  <th className="w-[12%] bg-[#0B6B8A] p-4 border border-gray-300 text-center text-[11px] font-black uppercase text-white">Contact Number</th>
+                  <th className="w-[16%] bg-[#0B6B8A] p-4 border border-gray-300 text-center text-[11px] font-black uppercase text-white">Item</th>
+                  <th className="w-[13%] bg-[#0B6B8A] p-4 border border-gray-300 text-center text-[11px] font-black uppercase text-white">Remarks</th>
+                  <th className="w-[11%] bg-[#0B6B8A] p-4 border border-gray-300 text-center text-[11px] font-black uppercase text-white">Declined On</th>
+                  <th className="w-[11%] bg-[#0B6B8A] p-4 border border-gray-300 text-center text-[11px] font-black uppercase text-white">Action</th>
+                </tr>
+              ) : (
+                <tr>
+                  <th className="w-[20%] bg-[#0B6B8A] p-4 border border-gray-300 text-center text-[11px] font-black uppercase text-white">Claimant Name</th>
+                  <th className="w-[24%] bg-[#0B6B8A] p-4 border border-gray-300 text-center text-[11px] font-black uppercase text-white">Email Address</th>
+                  <th className="w-[14%] bg-[#0B6B8A] p-4 border border-gray-300 text-center text-[11px] font-black uppercase text-white">Contact Number</th>
+                  <th className="w-[24%] bg-[#0B6B8A] p-4 border border-gray-300 text-center text-[11px] font-black uppercase text-white">Scheduled Date/Time</th>
+                  <th className="w-[18%] bg-[#0B6B8A] p-4 border border-gray-300 text-center text-[11px] font-black uppercase text-white">Action</th>
+                </tr>
+              )}
             </thead>
             <tbody className="bg-white">
               {visibleRows.length > 0 ? (
-                visibleRows.map((c, index) => renderClaimRow(c, index, visibleVariant))
+                visibleRows.map((c, index) =>
+                  isDeclinedTab ? renderDeclinedRow(c, index) : renderClaimRow(c, index)
+                )
               ) : (
                 <tr>
-                  <td colSpan={5} className="bg-white py-24 text-center text-[#7B8AA6] font-bold uppercase">
+                  <td colSpan={isDeclinedTab ? 7 : 5} className="bg-white py-24 text-center text-[#7B8AA6] font-bold uppercase">
                     {visibleEmptyText}
                   </td>
                 </tr>
@@ -1039,7 +1615,9 @@ const ClaimRequests = () => {
                 <div>
                   <h2 className="text-xl font-black">Claim Verification</h2>
                   <p className="mt-1 text-xs text-white/80">
-                    Review the claimant's ownership information before continuing.
+                    {selectedIsDeclined
+                      ? "This claim was declined. Below is a read-only record of the answers."
+                      : "Review the claimant's ownership information before continuing."}
                   </p>
                 </div>
                 <button
@@ -1054,18 +1632,30 @@ const ClaimRequests = () => {
             </div>
 
             <div className="flex-1 overflow-y-auto p-6 space-y-5">
-              {/* ==========================================================
-                  ITEM-ALREADY-CLAIMED BANNER — the single most decisive
-                  piece of context, so it sits above every other banner.
-                  Staff marking an item "Claimed" from Found Items never
-                  touches this specific Claim record, so without this
-                  notice a claim can sit here looking actionable (pending,
-                  or even flagged with mismatches) when the item itself was
-                  already resolved through a different claimant/flow
-                  entirely. Purple to match the "Claimed" status color used
-                  throughout FoundItems.jsx.
-              ========================================================== */}
-              {selectedItemAlreadyClaimed && (
+              {/* DECLINED BANNER */}
+              {/* Remarks say WHY it was declined: Not the Owner, Mismatch
+                  or Unable to Verify. */}
+              {selectedIsDeclined && (
+                <div className="flex items-start gap-3 rounded-xl border border-slate-300 bg-slate-50 p-4 text-slate-700">
+                  {selectedDeclineCategory === "notOwner" ? (
+                    <FiUserX className="mt-0.5 shrink-0" size={18} />
+                  ) : (
+                    <FiX className="mt-0.5 shrink-0" size={18} />
+                  )}
+                  <div>
+                    <p className="text-[10px] font-black uppercase tracking-wider opacity-70">Remarks</p>
+                    <p className="text-sm font-black uppercase tracking-wide">
+                      Declined — {DECLINE_CATEGORY_LABEL[selectedDeclineCategory]}
+                    </p>
+                    <p className="mt-1 text-[12px] font-semibold leading-relaxed opacity-90">
+                      {selectedDeclineReason}
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {/* ITEM-ALREADY-CLAIMED BANNER */}
+              {!selectedIsDeclined && selectedItemAlreadyClaimed && (
                 <div className="flex items-start gap-3 rounded-xl border border-purple-300 bg-purple-50 p-4">
                   <FiCheck className="mt-0.5 shrink-0 text-purple-600" size={18} />
                   <div>
@@ -1073,26 +1663,34 @@ const ClaimRequests = () => {
                       Item Already Marked Claimed
                     </p>
                     <p className="mt-1 text-[12px] font-semibold text-purple-700/90 leading-relaxed">
-                      This item's status was already set to "Claimed" (e.g. from Found Items).
+                      This item's status was already set to "Claimed" (e.g. from Surrendered Items).
                       This claim request may be outdated or refer to a claimant who was not the
-                      one who ultimately picked it up. Double-check before scheduling or acting on
-                      it further.
+                      one who ultimately picked it up. It will drop off this list on the next
+                      refresh — double-check before acting on it further.
                     </p>
                   </div>
                 </div>
               )}
 
-              {/* ==========================================================
-                  RED "WRONG ANSWER" BANNER — sits at the very top of the
-                  modal body, above everything else (item info, claimant
-                  info, Pending Review notice), so a flagged claim reads
-                  as a warning the instant staff opens Review. Both
-                  answers are still shown in full below, in the Answer
-                  Comparison panel — this banner never hides or replaces
-                  them, it just calls attention to the fact that at least
-                  one doesn't match.
-              ========================================================== */}
-              {selectedMismatchCount > 0 && (
+              {/* MISSED MEETINGS BANNER (re-claim after a no-show) */}
+              {!selectedIsDeclined && missedMeetings(selected) > 0 && (
+                <div className="flex items-start gap-3 rounded-xl border border-orange-300 bg-orange-50 p-4">
+                  <FiAlertTriangle className="mt-0.5 shrink-0 text-orange-600" size={18} />
+                  <div>
+                    <p className="text-xs font-black uppercase tracking-wider text-orange-700">
+                      {missedLabel(missedMeetings(selected))}
+                    </p>
+                    <p className="mt-1 text-[12px] font-semibold text-orange-700/90 leading-relaxed">
+                      This is a re-claim: the claimant did not show up for an earlier meeting for
+                      this item. Their ownership answers are the same as the original claim. After 3
+                      missed meetings they can no longer claim it online.
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {/* RED "WRONG ANSWER" BANNER */}
+              {!selectedIsDeclined && selectedMismatchCount > 0 && (
                 <div className="flex items-start gap-3 rounded-xl border border-red-300 bg-red-50 p-4">
                   <FiAlertTriangle className="mt-0.5 shrink-0 text-red-600" size={18} />
                   <div>
@@ -1100,47 +1698,61 @@ const ClaimRequests = () => {
                       {selectedMismatchCount} Answer{selectedMismatchCount > 1 ? "s" : ""} Don't Match Records
                     </p>
                     <p className="mt-1 text-[12px] font-semibold text-red-700/90 leading-relaxed">
-                      One or more of the claimant's answers don't match the answer recorded on
-                      the item. This is advisory only — see both answers side-by-side in the
-                      Answer Comparison section below and use your judgment.
+                      One or more of the claimant's answers don't match the answer recorded on the
+                      item. Compare both answers side-by-side in the Answer Comparison section
+                      below, then either{" "}
+                      <span className="font-black">Approve</span> to proceed anyway,
+                      or <span className="font-black">Decline</span> to reject this claim.
                     </p>
                   </div>
                 </div>
               )}
 
-              {/* ==========================================================
-                  ALREADY-SCHEDULED NOTICE
-                  A meeting_date/meeting_time is already set on this claim
-                  (claimant self-picked one at submission, or staff already
-                  ran through Review → Schedule → Confirm before). Surfacing
-                  this here — before staff even clicks "Continue to
-                  Schedule" — avoids staff re-scheduling the same claim/item
-                  a second time without realizing one is already booked.
-              ========================================================== */}
-              {selectedAlreadyScheduled && (
+              {/* REQUESTED / SCHEDULED SLOT NOTICE — the claimant's
+                  requested date and time. Staff can confirm it but can't
+                  change it. */}
+              {!selectedIsDeclined && selectedAlreadyScheduled && (
                 <div className="flex items-start gap-3 rounded-xl border border-emerald-300 bg-emerald-50 p-4">
                   <FiCalendar className="mt-0.5 shrink-0 text-emerald-600" size={18} />
                   <div>
                     <p className="text-xs font-black uppercase tracking-wider text-emerald-700">
-                      Meeting Already Scheduled
+                      {schedulingBlocked || !isStaffScheduled(selected)
+                        ? "Claimant Requested This Slot"
+                        : "Meeting Already Scheduled by Staff"}
                     </p>
                     <p className="mt-1 text-[12px] font-semibold text-emerald-700/90 leading-relaxed">
-                      A meeting is already set for{" "}
-                      <span className="font-black">{selected.meeting_date}</span> at{" "}
-                      <span className="font-black">{selected.meeting_time}</span>. Only continue to
-                      Schedule if you need to change this existing appointment — otherwise you're
-                      about to book this claim twice.
+                      {schedulingBlocked ? (
+                        <>
+                          The claimant requested{" "}
+                          <span className="font-black">{selected.meeting_date}</span> at{" "}
+                          <span className="font-black">{selected.meeting_time}</span>, but it isn't
+                          confirmed yet — resolve the mismatch above first (Approve
+                          or Decline).
+                        </>
+                      ) : (
+                        isStaffScheduled(selected) ? (
+                          <>
+                            An admin or moderator already confirmed the meeting on{" "}
+                            <span className="font-black">{selected.meeting_date}</span> at{" "}
+                            <span className="font-black">{selected.meeting_time}</span>. The claimant has
+                            been notified — nothing else is needed here.
+                          </>
+                        ) : (
+                          <>
+                            The claimant requested{" "}
+                            <span className="font-black">{selected.meeting_date}</span> at{" "}
+                            <span className="font-black">{selected.meeting_time}</span>. Continue to
+                            Schedule to confirm it — staff can't change this date or time.
+                          </>
+                        )
+                      )}
                     </p>
                   </div>
                 </div>
               )}
 
-              {/* Pending Review status — this claim was submitted by
-                  ClaimModal.jsx with no claimant-picked meeting slot,
-                  meaning the answers didn't verify (or couldn't be
-                  auto-checked) and it's waiting on a staff decision
-                  before any meeting exists. */}
-              {isPendingReview(selected) && (
+              {/* Pending Review notice — no claimant-picked slot at all. */}
+              {!selectedIsDeclined && isPendingReview(selected) && (
                 <div className="flex items-start gap-3 rounded-xl border border-blue-300 bg-blue-50 p-4">
                   <FiAlertTriangle className="mt-0.5 shrink-0 text-blue-600" size={18} />
                   <div>
@@ -1148,10 +1760,9 @@ const ClaimRequests = () => {
                       Pending Review — No Meeting Scheduled
                     </p>
                     <p className="mt-1 text-[12px] font-semibold text-blue-700/90 leading-relaxed">
-                      The claimant's answers didn't fully match our records (or couldn't be
-                      auto-checked), so they weren't shown a scheduling step. Review their
-                      answers below, then use "Continue to Schedule" to set a meeting yourself
-                      once you're satisfied.
+                      This claim was submitted with no meeting slot at all. Review their answers
+                      below, then use "Approve" to set a meeting yourself once you're
+                      satisfied.
                     </p>
                   </div>
                 </div>
@@ -1220,34 +1831,7 @@ const ClaimRequests = () => {
                 </div>
               </div>
 
-              {/* ==========================================================
-                  ANSWER COMPARISON (STAFF ONLY) — sole comparison surface
-
-                  Two-column comparison per question — claimant's answer
-                  vs. the correct answer recorded on the item, where one
-                  is available — separated by a divider. This is purely
-                  advisory — mismatches are flagged, never auto-rejected,
-                  since a claimant can still legitimately be the owner
-                  despite a wrong guess on one question (and vice versa).
-                  Staff makes the final call.
-
-                  Questions with no recorded correct answer (e.g. generic
-                  category fallback questions with no admin-defined answer)
-                  show "Not auto-checked" on the right instead of a false
-                  mismatch.
-
-                  Mismatched questions are sorted to the top and flagged
-                  in red so staff sees them first without having to scan
-                  the whole list — but both the claimant's answer and the
-                  staff-recorded answer always stay visible underneath the
-                  flag, for every question, matched or not.
-
-                  The previously separate "Compare Claimant's Answers to
-                  the Staff-Recorded Answers" block (free-text
-                  proof_description vs. a plain recorded Q&A list) has
-                  been removed — this panel is now the only claimant-vs-
-                  staff comparison shown in the modal.
-              ========================================================== */}
+              {/* ANSWER COMPARISON (STAFF ONLY) */}
               <div>
                 <div className="mb-3 flex items-center justify-between">
                   <p className="text-xs font-black uppercase tracking-wider text-[#0B6B8A]">
@@ -1280,194 +1864,110 @@ const ClaimRequests = () => {
                 )}
 
                 <p className="mt-2 text-[10px] font-semibold text-slate-400">
-                  Flags are advisory only — claimants never see this comparison, and a
-                  mismatch does not block scheduling. Use your judgment.
+                  {selectedIsDeclined
+                    ? "Claimants never see this comparison. This claim has already been declined, so no further action is available."
+                    : "Claimants never see this comparison. A flagged mismatch requires you to either Approve or Decline before this claim can proceed."}
                 </p>
               </div>
             </div>
 
-            <div className="flex gap-3 border-t bg-slate-50 p-4 justify-end shrink-0">
-              <button
-                type="button"
-                onClick={closeReview}
-                className="flex h-10 px-4 items-center justify-center rounded-xl bg-slate-200 text-slate-700 font-bold text-xs hover:bg-slate-300 transition-colors"
-              >
-                Close
-              </button>
-              <button
-                type="button"
-                onClick={continueToSchedule}
-                className="flex h-10 px-5 items-center justify-center gap-2 rounded-xl bg-[#0B6B8A] text-white font-bold text-xs hover:bg-[#095A74] transition-colors"
-              >
-                <span>{selectedAlreadyScheduled ? "Continue to Reschedule" : "Continue to Schedule"}</span>
-                <FiArrowRight size={16} />
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* SCHEDULE MANAGER (batch add) */}
-      {showScheduleManager && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#071E3D]/40 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-xl max-h-[90vh] flex flex-col rounded-2xl bg-white p-6 shadow-2xl overflow-hidden">
-            <div className="flex items-center justify-between border-b pb-3 shrink-0">
-              <h3 className="text-lg font-bold text-[#071E3D]">Batch Manage Claim Slots</h3>
-              <button
-                onClick={() => setShowScheduleManager(false)}
-                title="Close"
-                aria-label="Close"
-                className="text-gray-400 hover:text-black transition-colors"
-              >
-                <FiX size={18} />
-              </button>
-            </div>
-
-            <div className="flex-1 overflow-y-auto pr-1 mt-4 space-y-5">
-              <div className="rounded-xl bg-slate-50 p-4 border space-y-4">
-                <p className="text-xs font-bold uppercase text-[#0B6B8A]">1. Select Multiple Dates</p>
-                <div className="flex gap-2">
-                  <input
-                    type="date"
-                    min={todayDate}
-                    value={tempDate}
-                    onChange={(e) => setTempDate(e.target.value)}
-                    className="flex-1 rounded-lg border p-2 text-xs font-medium bg-white outline-none focus:border-[#0B6B8A]"
-                  />
-                  <button
-                    type="button"
-                    onClick={handleAddDate}
-                    title="Add Date"
-                    aria-label="Add Date"
-                    className="inline-flex h-9 px-3 items-center justify-center gap-1 rounded-lg bg-[#0B6B8A] text-xs font-bold text-white hover:bg-[#095A74] transition-colors"
-                  >
-                    <FiPlus size={16} />
-                    <span>Add Date</span>
-                  </button>
-                </div>
-
-                <div className="flex flex-wrap gap-1.5 min-h-[32px] p-2 rounded-lg bg-white border border-dashed border-slate-300">
-                  {selectedDates.length === 0 ? (
-                    <span className="text-xs text-slate-400 italic">No dates added yet</span>
-                  ) : (
-                    selectedDates.map((date) => (
-                      <span
-                        key={date}
-                        className="inline-flex items-center gap-1.5 rounded-md bg-[#0B6B8A]/10 px-2.5 py-1 text-xs font-bold text-[#0B6B8A]"
-                      >
-                        {date}
-                        <button
-                          type="button"
-                          onClick={() => handleRemoveDate(date)}
-                          title="Remove Date"
-                          aria-label="Remove Date"
-                          className="hover:text-rose-600 transition-colors"
-                        >
-                          <FiX size={12} />
-                        </button>
-                      </span>
-                    ))
-                  )}
-                </div>
-
-                <div className="flex items-center justify-between pt-1">
-                  <p className="text-xs font-bold uppercase text-[#0B6B8A]">2. Select Time Slots</p>
-                  <button
-                    type="button"
-                    onClick={toggleAllTimes}
-                    className="text-xs font-bold text-[#0B6B8A] hover:text-[#095A74] transition-colors flex items-center gap-1"
-                  >
-                    {selectedTimes.length === TIME_OPTIONS.length ? (
-                      <>
-                        <FiCheckSquare size={16} /> Deselect All
-                      </>
-                    ) : (
-                      <>
-                        <FiSquare size={16} /> Select All
-                      </>
-                    )}
-                  </button>
-                </div>
-
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                  {TIME_OPTIONS.map((time) => {
-                    const isSelected = selectedTimes.includes(time);
-                    return (
-                      <button
-                        key={time}
-                        type="button"
-                        onClick={() => toggleTimeSlot(time)}
-                        className={`flex items-center justify-between rounded-lg border px-3 py-2 text-xs font-medium transition-all ${
-                          isSelected
-                            ? "border-[#0B6B8A] bg-[#0B6B8A] text-white"
-                            : "border-slate-200 bg-white text-slate-700 hover:border-slate-300"
-                        }`}
-                      >
-                        <span>{time}</span>
-                        {isSelected && <FiCheck size={14} />}
-                      </button>
-                    );
-                  })}
-                </div>
-
-                <button
-                  type="button"
-                  onClick={handleAddScheduleSlotsBatch}
-                  disabled={addingSlots || selectedDates.length === 0 || selectedTimes.length === 0}
-                  className="flex h-10 w-full items-center justify-center gap-2 rounded-lg bg-[#0B6B8A] text-xs font-bold text-white hover:bg-[#095A74] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                >
-                  {addingSlots ? (
-                    <div className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />
-                  ) : (
-                    <>
-                      <FiPlus size={16} />
-                      <span>Save Slot Combinations ({selectedDates.length * selectedTimes.length})</span>
-                    </>
-                  )}
-                </button>
-              </div>
-
-              <div className="max-h-52 overflow-y-auto space-y-2">
-                <p className="text-xs font-bold uppercase text-slate-500">
-                  Active Configured Slots ({schedules.length})
-                </p>
-                {schedules.length === 0 ? (
-                  <p className="text-xs text-slate-400">No available slots configured yet.</p>
-                ) : (
-                  schedules.map((slot) => (
-                    <div
-                      key={slot.id || slot._id}
-                      className="flex items-center justify-between rounded-lg border px-3 py-2 text-xs font-semibold text-slate-700 bg-white"
+            {/* FOOTER — three layouts:
+                  - Declined: no footer at all (read-only).
+                  - Needs attention: "Decline" / "Approve".
+                  - Clean or already approved: "Continue to Schedule". */}
+            {!selectedIsDeclined && (
+              <div className="flex gap-3 border-t bg-slate-50 p-4 justify-end shrink-0">
+                {needsAttention(selected) ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => setShowDeclineConfirm(true)}
+                      disabled={declining}
+                      className="flex h-10 px-5 items-center justify-center gap-2 rounded-xl bg-rose-600 text-white font-bold text-xs hover:bg-rose-700 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
                     >
-                      <span>
-                        📅 {slot.date} — 🕒 {slot.time_slot}
-                      </span>
-                      <button
-                        onClick={() => handleDeleteScheduleSlot(slot.id || slot._id)}
-                        title="Delete Slot"
-                        aria-label="Delete Slot"
-                        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-rose-500 hover:bg-rose-50 hover:text-rose-600 transition-all"
-                      >
-                        <FiTrash2 size={15} />
-                      </button>
-                    </div>
-                  ))
+                      {declining ? (
+                        <div className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                      ) : (
+                        <span>Decline</span>
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={approveFromModal}
+                      disabled={declining || approvingId !== null}
+                      title={
+                        isPendingReview(selected)
+                          ? "Approve this claim and pick a meeting date/time"
+                          : "Approve this claim and confirm the requested meeting slot"
+                      }
+                      className="flex h-10 px-5 items-center justify-center gap-2 rounded-xl bg-emerald-600 text-white font-bold text-xs hover:bg-emerald-700 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
+                    >
+                      <span>{approvingId !== null ? "Approving..." : "Approve"}</span>
+                    </button>
+                  </>
+                ) : (
+                  <>
+                {/* "Not the Owner": declines a claim whose claimant turned
+                    out not to own the item (found out at the meeting). Only
+                    shown once staff have done Continue to Schedule. */}
+                {isStaffScheduled(selected) && (
+                  <button
+                    type="button"
+                    onClick={() => { setNotOwnerDecline(true); setShowDeclineConfirm(true); }}
+                    disabled={declining}
+                    title="The claimant turned out not to be the owner — decline this claim"
+                    className="flex h-10 px-5 items-center justify-center gap-2 rounded-xl border border-rose-300 bg-white text-rose-600 font-bold text-xs hover:bg-rose-50 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
+                  >
+                    <FiUserX size={16} />
+                    <span>Not the Owner</span>
+                  </button>
+                )}
+                {isStaffScheduled(selected) ? (
+                  // Already confirmed by an admin/moderator: opens this
+                  // item's Review modal on the Surrendered (Found) Items
+                  // page, where staff can mark it as claimed after the
+                  // meeting. See the reviewItemId handling in FoundItems.jsx.
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const itemId =
+                        selected?.item_details?.id ?? selected?.item?.id ?? selected?.item;
+                      closeReview();
+                      navigate("/dashboard/surrendered-items", {
+                        state: { reviewItemId: itemId },
+                      });
+                    }}
+                    title="Open this item's Review in Surrendered Items"
+                    className="flex h-10 px-5 items-center justify-center gap-2 rounded-xl bg-[#0B6B8A] text-white font-bold text-xs hover:bg-[#095A74] transition-colors"
+                  >
+                    <FiEye size={16} />
+                    <span>Review</span>
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={continueToSchedule}
+                    className="flex h-10 px-5 items-center justify-center gap-2 rounded-xl bg-[#0B6B8A] text-white font-bold text-xs hover:bg-[#095A74] transition-colors"
+                  >
+                    <span>Continue to Schedule</span>
+                    <FiArrowRight size={16} />
+                  </button>
+                )}
+                  </>
                 )}
               </div>
-            </div>
+            )}
           </div>
         </div>
       )}
 
-      {/* SCHEDULE MEETING MODAL */}
-      {selected && !showReview && (
+      {/* SCHEDULE MEETING MODAL — never shown for a declined claim. */}
+      {selected && !showReview && !selectedIsDeclined && !rowDecline && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#071E3D]/40 p-4 backdrop-blur-sm">
           <div className="w-full max-w-md rounded-2xl bg-white shadow-2xl overflow-hidden">
             <div className="bg-[#0B6B8A] px-6 py-4 text-white flex items-center justify-between">
               <div>
-                <h2 className="text-lg font-extrabold">
-                  {selectedAlreadyScheduled ? "Update Verification Schedule" : "Schedule Verification"}
-                </h2>
+                <h2 className="text-lg font-extrabold">Schedule Verification</h2>
                 <p className="text-xs opacity-80">Claimant: {selected.claimant_name}</p>
               </div>
               <button
@@ -1481,10 +1981,7 @@ const ClaimRequests = () => {
             </div>
 
             <div className="p-6 space-y-4">
-              {/* Compact purple banner — mirrors the Review modal's
-                  item-already-claimed notice, since staff can reach this
-                  modal straight from "Continue to Schedule" without a
-                  second look at Review. */}
+              {/* Compact purple banner — item already claimed. */}
               {selectedItemAlreadyClaimed && (
                 <div className="flex items-start gap-2 rounded-xl border border-purple-300 bg-purple-50 p-3">
                   <FiCheck className="mt-0.5 shrink-0 text-purple-600" size={15} />
@@ -1495,51 +1992,17 @@ const ClaimRequests = () => {
                 </div>
               )}
 
-              {/* Compact red banner — mirrors the Review modal's top
-                  warning so the flag is visible here too, without
-                  needing to go "Back". */}
-              {selectedMismatchCount > 0 && (
-                <div className="flex items-start gap-2 rounded-xl border border-red-300 bg-red-50 p-3">
-                  <FiAlertTriangle className="mt-0.5 shrink-0 text-red-600" size={15} />
-                  <p className="text-[11px] font-bold text-red-700 leading-relaxed">
-                    {selectedMismatchCount} answer{selectedMismatchCount > 1 ? "s" : ""} don't match
-                    the recorded description — see the comparison below.
-                  </p>
-                </div>
-              )}
-
-              {/* ==========================================================
-                  ALREADY-SCHEDULED WARNING (compact)
-                  Same purpose as the Review modal's notice, repeated here
-                  since staff can reach this modal straight from
-                  "Continue to Schedule" without a second look at Review.
-                  Names the existing date/time explicitly and makes clear
-                  that confirming below overwrites it, so nothing gets
-                  double-booked on the same item by accident.
-              ========================================================== */}
-              {selectedAlreadyScheduled && (
-                <div className="flex items-start gap-2 rounded-xl border border-amber-300 bg-amber-50 p-3">
-                  <FiCalendar className="mt-0.5 shrink-0 text-amber-600" size={15} />
+              {/* Compact amber banner — approved mismatch. */}
+              {approvedMismatch && selectedMismatchCount > 0 && (
+                <div className="rounded-xl border border-amber-300 bg-amber-50 p-3">
                   <p className="text-[11px] font-bold text-amber-700 leading-relaxed">
-                    Already scheduled for{" "}
-                    <span className="font-black">
-                      {selected.meeting_date} ({selected.meeting_time})
-                    </span>
-                    . Confirming below will overwrite this with the new date/time selected.
+                    {selectedMismatchCount} mismatch{selectedMismatchCount > 1 ? "es were" : " was"}{" "}
+                    approved by staff — see the comparison below.
                   </p>
                 </div>
               )}
 
-              {/* ==========================================================
-                  ANSWER COMPARISON OVERVIEW (inline, staff-only)
-
-                  Lets staff see at a glance — right here in the
-                  scheduling step, without having to go "Back" to the
-                  Review screen — the same two-column comparison (claimant
-                  vs. recorded) as the Review modal, just in a more compact
-                  layout. Purely advisory, same rules as the Review modal's
-                  comparison: mismatches never block scheduling.
-              ========================================================== */}
+              {/* ANSWER COMPARISON OVERVIEW (inline, staff-only) */}
               {answerComparison.length > 0 && (
                 <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
                   <div className="mb-2 flex items-center justify-between">
@@ -1563,44 +2026,92 @@ const ClaimRequests = () => {
                 </div>
               )}
 
-              <div>
-                <label className="block text-xs font-bold text-[#071E3D] mb-1">Meeting Date</label>
-                <input
-                  type="date"
-                  value={meetingDate}
-                  min={todayDate}
-                  onChange={(e) => {
-                    setMeetingDate(e.target.value);
-                    setMeetingTime("");
-                  }}
-                  className="w-full rounded-xl border p-3 text-sm outline-none focus:border-[#0B6B8A]"
-                />
-              </div>
+              {requestedSlotBlocked && (
+                <div className="flex items-start gap-3 rounded-xl border border-rose-300 bg-rose-50 p-3">
+                  <FiAlertTriangle className="mt-0.5 shrink-0 text-rose-600" size={16} />
+                  <p className="text-[12px] font-semibold text-rose-700 leading-relaxed">
+                    The claimant's requested slot ({selected.meeting_date}, {selected.meeting_time}) was
+                    disabled in Manage Slots{requestedSlotBlock?.reason ? ` — ${requestedSlotBlock.reason}` : ""}.
+                    Pick a new date and time below.
+                  </p>
+                </div>
+              )}
 
-              <div>
-                <label className="block text-xs font-bold text-[#071E3D] mb-1">Meeting Time Slot</label>
-                <select
-                  value={meetingTime}
-                  onChange={(e) => setMeetingTime(e.target.value)}
-                  disabled={!meetingDate}
-                  className="w-full rounded-xl border p-3 text-sm outline-none focus:border-[#0B6B8A] disabled:bg-slate-100"
-                >
-                  <option value="">Select available time</option>
-                  {availableTimesForSelectedDate.length > 0 ? (
-                    availableTimesForSelectedDate.map((slot) => (
-                      <option key={slot} value={slot}>
-                        {slot}
-                      </option>
-                    ))
-                  ) : (
-                    TIME_OPTIONS.map((slot) => (
-                      <option key={slot} value={slot}>
-                        {slot} (Default)
-                      </option>
-                    ))
-                  )}
-                </select>
-              </div>
+              {selectedAlreadyScheduled && !requestedSlotBlocked ? (
+                /* READ-ONLY: the claimant's requested slot can't be
+                   edited by admins or moderators — only confirmed. */
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-bold text-[#071E3D] mb-1">Meeting Date</label>
+                    <div className="w-full rounded-xl border bg-slate-100 p-3 text-sm font-semibold text-slate-700 cursor-not-allowed">
+                      {selected.meeting_date}
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-[#071E3D] mb-1">Meeting Time Slot</label>
+                    <div className="w-full rounded-xl border bg-slate-100 p-3 text-sm font-semibold text-slate-700 cursor-not-allowed">
+                      {selected.meeting_time}
+                    </div>
+                  </div>
+                  <p className="col-span-2 text-[11px] font-semibold text-slate-500">
+                    This is the slot the claimant requested. It can't be changed.
+                  </p>
+                </div>
+              ) : (
+                <>
+                  <div>
+                    <label className="block text-xs font-bold text-[#071E3D] mb-1">Meeting Date</label>
+                    <input
+                      type="date"
+                      value={meetingDate}
+                      min={todayDate}
+                      onChange={(e) => {
+                        setMeetingDate(e.target.value);
+                        setMeetingTime("");
+                      }}
+                      className="w-full rounded-xl border p-3 text-sm outline-none focus:border-[#0B6B8A]"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-[#071E3D] mb-1">Meeting Time Slot</label>
+                    <select
+                      value={meetingTime}
+                      onChange={(e) => setMeetingTime(e.target.value)}
+                      disabled={!meetingDate}
+                      className="w-full rounded-xl border p-3 text-sm outline-none focus:border-[#0B6B8A] disabled:bg-slate-100 disabled:cursor-not-allowed"
+                    >
+                      <option value="">Select available time</option>
+                      {slotsAllowedOn(meetingDate, TIME_OPTIONS).map((slot) => {
+                        const off = !!findBlock(meetingDate, slot);
+                        return (
+                          <option key={slot} value={slot} disabled={off}>
+                            {slot}
+                            {off ? " (Disabled)" : ""}
+                          </option>
+                        );
+                      })}
+                    </select>
+                    {isWholeDayBlocked(meetingDate) && (
+                      <p className="mt-1 text-[11px] font-semibold text-red-600">
+                        This day is disabled in Manage Slots
+                        {findBlock(meetingDate, null)?.reason ? ` (${findBlock(meetingDate, null).reason})` : ""} —
+                        please pick another date.
+                      </p>
+                    )}
+                    {weekdayOf(meetingDate) === 0 && (
+                      <p className="mt-1 text-[11px] font-semibold text-red-600">
+                        No meeting slots on Sundays — please pick another date.
+                      </p>
+                    )}
+                    {weekdayOf(meetingDate) === 6 && (
+                      <p className="mt-1 text-[11px] font-semibold text-amber-600">
+                        Saturday meetings are only from 8:00 AM to 11:00 AM.
+                      </p>
+                    )}
+                  </div>
+                </>
+              )}
 
               <div className="rounded-xl bg-blue-50 border border-blue-100 p-3">
                 <p className="text-xs text-blue-700">
@@ -1616,6 +2127,7 @@ const ClaimRequests = () => {
                     setFullItem(null);
                     setMeetingDate("");
                     setMeetingTime("");
+                    setApprovedMismatch(false);
                   }}
                   className="flex h-10 flex-1 items-center justify-center rounded-xl bg-slate-100 text-slate-600 font-bold text-xs hover:bg-slate-200 transition-colors"
                 >
@@ -1624,19 +2136,99 @@ const ClaimRequests = () => {
                 <button
                   type="button"
                   onClick={send}
-                  disabled={sending || !meetingDate || !meetingTime}
-                  className="flex h-10 flex-1 items-center justify-center gap-2 rounded-xl bg-[#0B6B8A] text-white font-bold text-xs hover:bg-[#095A74] disabled:bg-slate-400 transition-colors"
+                  disabled={
+                    sending ||
+                    (selectedAlreadyScheduled && !requestedSlotBlocked
+                      ? false
+                      : !meetingDate || !meetingTime || !!findBlock(meetingDate, meetingTime))
+                  }
+                  className="flex h-10 flex-1 items-center justify-center gap-2 rounded-xl bg-[#0B6B8A] text-white font-bold text-xs hover:bg-[#095A74] disabled:bg-slate-400 disabled:cursor-not-allowed transition-colors"
                 >
                   {sending ? (
                     <div className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />
                   ) : (
                     <>
                       <FiCheck size={16} />
-                      <span>{selectedAlreadyScheduled ? "Update Schedule" : "Confirm Schedule"}</span>
+                      <span>Confirm Schedule</span>
                     </>
                   )}
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MANAGE SLOTS (calendar) */}
+      <ManageSlotsModal
+        open={showManageSlots}
+        onClose={() => setShowManageSlots(false)}
+        bookedClaims={bookedClaims}
+        onChanged={loadBlockedSlots}
+        notify={showNotification}
+      />
+
+      {/* DECLINE CONFIRMATION MODAL */}
+      {showDeclineConfirm && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-[#071E3D]/50 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-sm rounded-[28px] bg-white px-8 py-8 text-center shadow-2xl">
+            <div className="mx-auto mb-7 flex h-16 w-16 items-center justify-center rounded-full bg-rose-50 text-rose-600">
+              {notOwnerDecline ? (
+                <FiUserX size={30} strokeWidth={2.5} />
+              ) : (
+                <FiAlertTriangle size={30} strokeWidth={2.5} />
+              )}
+            </div>
+
+            <h5 className="mb-3 text-lg font-black text-[#144B70]">
+              {notOwnerDecline ? "Not the Owner" : "Decline Claim"}
+            </h5>
+
+            <p className="mx-auto mb-6 max-w-[280px] text-sm font-medium leading-6 text-[#5F6F8C]">
+              {notOwnerDecline ? (
+                <>
+                  {selected?.claimant_name
+                    ? `Mark ${selected.claimant_name} as not the owner of this item? `
+                    : "Mark this claimant as not the owner? "}
+                  Their claim will be declined and moved to the Declined tab, and the
+                  item stays available for its real owner.
+                </>
+              ) : (
+                <>
+                  {selected?.claimant_name
+                    ? `Decline ${selected.claimant_name}'s claim? `
+                    : "Decline this claim? "}
+                  {declineHasMismatch
+                    ? "They will be emailed that their answers did not match our records."
+                    : "They will be emailed that we couldn't verify their claim."}
+                </>
+              )}
+            </p>
+
+            <div className="space-y-3">
+              <button
+                onClick={async () => {
+                  if (declining) return;
+                  await handleDecline();
+                  setShowDeclineConfirm(false);
+                }}
+                disabled={declining}
+                className={`h-12 w-full rounded-xl text-sm font-black uppercase tracking-wide text-white shadow-md transition active:scale-[0.98] ${
+                  declining
+                    ? "cursor-not-allowed bg-slate-300"
+                    : "bg-rose-600 hover:bg-rose-700"
+                }`}
+              >
+                {declining ? "Declining..." : notOwnerDecline ? "Yes, Not the Owner" : "Yes, Decline"}
+              </button>
+
+              <button
+                onClick={cancelDecline}
+                disabled={declining}
+                className="h-12 w-full rounded-xl border border-[#0B6B8A] bg-white text-sm font-black uppercase tracking-wide text-[#0B6B8A] transition hover:bg-[#EAF4F8] disabled:opacity-60"
+              >
+                No
+              </button>
             </div>
           </div>
         </div>

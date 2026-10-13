@@ -1,7 +1,8 @@
 import React, { useEffect, useState, useRef } from "react";
 import { X, User, Mail, Phone, Shield, Lock, Camera, LogOut } from "lucide-react";
 import { getCurrentUser } from "../api/api"; 
-import ChangePasswordModal from "./ChangePasswordModal";
+import ChangePasswordModal from "../components/ChangePasswordModal";
+import { showToast } from "../utils/toast";
 
 const ProfileModal = ({ isOpen, onClose, onLogout, setShowProfile }) => {
   const [profileData, setProfileData] = useState(null);
@@ -42,20 +43,20 @@ const ProfileModal = ({ isOpen, onClose, onLogout, setShowProfile }) => {
     if (!file) return;
 
     if (!file.type.startsWith("image/")) {
-      window.alert("Please select a valid image file.");
+      showToast("Please select a valid image file.");
       return;
     }
 
     const reader = new FileReader();
     reader.onloadend = () => {
       setLocalImage(reader.result);
-      window.alert("Profile picture updated in view (Frontend only).");
+      showToast("Profile picture updated in view (Frontend only).");
     };
     reader.readAsDataURL(file);
   };
 
   const handleLogout = () => {
-    if (setShowProfileModal) setShowProfileModal(false);
+    if (setShowProfile) setShowProfile(false);
     if (onLogout) onLogout();
   };
 
@@ -174,4 +175,4 @@ const ProfileField = ({ icon: Icon, label, value }) => (
   </div>
 );
 
-export default Profile;
+export default ProfileModal;

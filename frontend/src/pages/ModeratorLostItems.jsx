@@ -3,11 +3,12 @@ import { Eye, Pencil, Archive, Trash2, CheckCircle, AlertCircle, X } from 'lucid
 import { useApp } from '../context/AppContext';
 import { getItems, getItemById, API_URL, editLostItem, createLostItem, deleteLostItem } from "../api/api";
 import PhotoUpload from '../components/PhotoUpload';
-import { logActivity } from '../utils/activityLog';
+import { logActivity } from '../utils/Activitylog';
+import Pagination from "../components/Pagination";
+import { showToast } from "../utils/toast";
 
 const AREAS = [
   'Grandstand',
-  'Criminology Building',
   'Verbist Building',
   'Chapel',
   'Administrative Building (Main Building)',
@@ -21,10 +22,12 @@ const AREAS = [
   'Conrado Dela Cruz Sports Center (CDC)',
   'Senior High School Department Building',
   'HM Laboratory Building',
+  'Student Affairs Office Lobby',
   'Others'
 ];
-const CATS = ['Personal', 'Accessories', 'Id', 'Electronics', 'Keys', 'Valuables'];
-const STATUSES = ['Pending', 'Claimed', 'Approved'];
+// Same lists as LostItems.jsx and the backend ItemDetails choices.
+const CATS = ['Accessories', 'ID', 'Academic Materials', 'Bags & Wallets', 'Clothing', 'Electronic', 'Keys'];
+const STATUSES = ['Pending', 'Approved', 'Declined', 'Claimed'];
 
 const statusColor = (s) =>
   s === 'Claimed' ? 'bg-purple-100 text-purple-500' :
@@ -33,9 +36,9 @@ const statusColor = (s) =>
 
 const EMPTY = {
   title: '',
-  category: 'Personal',
+  category: 'Accessories',
   poster_name: '',
-  location: 'Canteen',
+  location: 'SLC Canteen',
   created_date: '',
   created_time: '',
   description: '',
@@ -58,7 +61,7 @@ const ItemModal = ({ item, onSave, onClose }) => {
 
   const normalizeForm = (source) => {
     const base = source || EMPTY;
-    const location = base.location || "Canteen";
+    const location = base.location || "SLC Canteen";
 
     if (location && !AREAS.includes(location)) {
       return {
@@ -99,7 +102,7 @@ const ItemModal = ({ item, onSave, onClose }) => {
     const today = new Date().toLocaleDateString("en-CA");
 
     if (form.created_date && form.created_date > today) {
-      window.alert("Date reported cannot be in the future.");
+      showToast("Date reported cannot be in the future.");
       return;
     }
 
@@ -180,7 +183,7 @@ const ItemModal = ({ item, onSave, onClose }) => {
                 <label className={labelClass}>Item Name *</label>
                 <input
                   className={inputClass}
-                  value={form.title || ""}
+                  value={form.title || ""} maxLength={30}
                   onChange={(e) => set("title", e.target.value)}
                   placeholder="e.g. Black Wallet"
                   required
@@ -204,7 +207,7 @@ const ItemModal = ({ item, onSave, onClose }) => {
                 <label className={labelClass}>Category</label>
                 <select
                   className={inputClass}
-                  value={form.category || "Personal"}
+                  value={form.category || "Accessories"}
                   onChange={(e) => set("category", e.target.value)}
                 >
                   {CATS.map((c) => (
@@ -217,24 +220,29 @@ const ItemModal = ({ item, onSave, onClose }) => {
                 <label className={labelClass}>Area Lost</label>
                 <select
                   className={inputClass}
-                  value={form.location || "Canteen"}
+                  value={form.location || "SLC Canteen"}
                   onChange={(e) => set("location", e.target.value)}
                 >
                   {AREAS.map((a) => (
                     <option key={a} value={a}>
-                      {a}
+                      {a === 'Others' ? 'Others (please specify)' : a}
                     </option>
                   ))}
                 </select>
 
-                <input
-                  className={`${inputClass} mt-2 disabled:cursor-not-allowed disabled:text-slate-400`}
-                  value={form.other_location || ""}
-                  onChange={(e) => set("other_location", e.target.value)}
-                  placeholder="Please specify location"
-                  disabled={form.location !== "Others"}
-                  required={form.location === "Others"}
-                />
+                {form.location === "Others" && (
+                  <>
+                    <p className="mt-2 mb-1 text-[11px] font-bold uppercase text-slate-500">If others, please specify *</p>
+                    <input
+                      className={inputClass}
+                      value={form.other_location || ""}
+                      onChange={(e) => set("other_location", e.target.value)}
+                      placeholder="Please specify the area lost"
+                      autoFocus
+                      required
+                    />
+                  </>
+                )}
               </div>
             </div>
 
@@ -282,10 +290,11 @@ const ItemModal = ({ item, onSave, onClose }) => {
               <textarea
                 className="min-h-[88px] w-full resize-none rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-700 outline-none placeholder:text-slate-400 focus:border-[#1478a7]"
                 rows={2}
-                value={form.description || ""}
+                value={form.description || ""} maxLength={100}
                 onChange={(e) => set("description", e.target.value)}
                 placeholder="Describe the item..."
               />
+              <p className="mt-1 text-right text-[11px] font-semibold text-slate-400">{(form.description || "").length}/100</p>
             </div>
 
             {!isEdit && (
@@ -358,9 +367,20 @@ const ConfirmModal = ({ message, onConfirm, onClose }) => (
 );
 
 // ─── LostItems Main Page ────────────────────────────────────────────────────
+// Status tabs shown above the table (same as the admin Lost Items page).
+const STATUS_FILTERS = ['Pending', 'Approved', 'Declined', 'Claimed'];
+const inStatusTab = (status, tab) =>
+  status === tab;
+
+// Reason saved when a moderator declines a report — same wording as the
+// admin Lost Items page.
+const DEFAULT_DECLINE_REMARKS =
+  'Your report could not be approved. Please visit the Student Affairs Office for more details.';
+
 const LostItems = ({ currentFilter, role }) => {
   const { lostItems, addLostItem, updateLostItem } = useApp();
   const [search, setSearch] = useState('');
+  const [statusFilter, setStatusFilter] = useState('Pending');
   const [addOpen, setAddOpen] = useState(false);
   const [items, setItems] = useState([]);
   const [editItem, setEditItem] = useState(null);
@@ -383,7 +403,7 @@ const LostItems = ({ currentFilter, role }) => {
 
   useEffect(() => {
     setCurrentPage(1);
-  }, [currentFilter]);
+  }, [currentFilter, statusFilter, search]);
 
   const goToPage = (page) => {
     setCurrentPage(page);
@@ -479,12 +499,12 @@ const LostItems = ({ currentFilter, role }) => {
 
       await editLostItem(editItem.id, formData);
 
-      window.alert('Item updated successfully!');
+      showToast('Item updated successfully!');
       await fetchItems();
       setEditItem(null);
     } catch (error) {
       console.error('Error updating item:', error);
-      window.alert('Failed to update item. Please try again.');
+      showToast('Failed to update item. Please try again.');
     }
   }
 
@@ -521,25 +541,19 @@ const LostItems = ({ currentFilter, role }) => {
         details: 'reported a lost item',
       });
 
-      window.alert(isStaff ? 'Item added and approved successfully!' : 'Item added successfully!');
+      showToast(isStaff ? 'Item added and approved successfully!' : 'Item added successfully!');
       await fetchItems();
       setAddOpen(false);
     } catch (error) {
       console.error('Error adding item:', error);
-      window.alert('Failed to add item. Please try again.');
+      showToast('Failed to add item. Please try again.');
     }
   }
 
   async function handleUpdateStatus(item, newStatus) {
     try {
+      // Only the status changes, so nothing else on the report is re-sent.
       const formData = new FormData();
-      formData.append('title', item.title || '');
-      formData.append('poster_name', item.poster_name || '');
-      formData.append('category', item.category || '');
-      formData.append('location', item.location || '');
-      formData.append('created_date', item.created_date || '');
-      formData.append('created_time', item.created_time || '');
-      formData.append('description', item.description || '');
       formData.append('status', newStatus);
 
       await editLostItem(item.id, formData);
@@ -559,23 +573,38 @@ const LostItems = ({ currentFilter, role }) => {
     }
   }
 
-  // Archives (deletes) an item and logs the action. Server errors are
-  // surfaced with their real message so failures are visible instead of
-  // silently stopping before logActivity ever runs.
+  // 'archived'  -> soft archive (status 'Archived'); record is kept and shows
+  //               up on Utilities > Archive where it can be restored.
+  // 'declined'  -> status 'Declined' with the automatic reason (same as the
+  //               admin page), so it shows under the Declined tab.
   async function handleArchive(id, actionType = 'archived') {
     try {
       const target = items.find((i) => i.id === id);
-      await deleteLostItem(id);
+
+      if (actionType === 'declined') {
+        const formData = new FormData();
+        formData.append('status', 'Declined');
+        formData.append('declined_remarks', DEFAULT_DECLINE_REMARKS);
+        await editLostItem(id, formData);
+      } else {
+        const formData = new FormData();
+        formData.append('status', 'Archived');
+        await editLostItem(id, formData);
+      }
 
       logActivity({
         action: actionType,
         target_title: target?.title,
         details: target?.title
-          ? `${actionType === 'declined' ? 'declined and removed' : 'archived'} "${target.title}"`
-          : `${actionType === 'declined' ? 'declined and removed' : 'archived'} an item`,
+          ? `${actionType === 'declined' ? 'declined' : 'archived'} "${target.title}"`
+          : `${actionType === 'declined' ? 'declined' : 'archived'} an item`,
       });
 
-      setNotificationMessage(actionType === 'declined' ? 'Item declined and removed.' : 'Item archived.');
+      setNotificationMessage(
+        actionType === 'declined'
+          ? 'Item declined. You can find it under the Declined tab.'
+          : 'Item archived. You can find it in Utilities > Archive.'
+      );
       await fetchItems();
       setSelectedItem(null);
       setActiveConfirmation(null);
@@ -590,22 +619,32 @@ const LostItems = ({ currentFilter, role }) => {
     }
   }
 
+  // Shared by the filtered table and the per-tab counts below.
+  const matchesSearch = (item) => {
+    const searchText = search.toLowerCase();
+    return (
+      item.title?.toLowerCase().includes(searchText) ||
+      item.category?.toLowerCase().includes(searchText) ||
+      item.poster_name?.toLowerCase().includes(searchText) ||
+      item.location?.toLowerCase().includes(searchText) ||
+      item.status?.toLowerCase().includes(searchText)
+    );
+  };
+
   const filteredLost = items
-    .filter((item) => {
-      const searchText = search.toLowerCase();
-      return (
-        item.type?.toUpperCase() === 'LOST' &&
-        item.status?.toUpperCase() !== 'CLAIMED' &&
-        (
-          item.title?.toLowerCase().includes(searchText) ||
-          item.category?.toLowerCase().includes(searchText) ||
-          item.poster_name?.toLowerCase().includes(searchText) ||
-          item.location?.toLowerCase().includes(searchText) ||
-          item.status?.toLowerCase().includes(searchText)
-        )
-      );
-    })
+    .filter((item) =>
+      item.type?.toUpperCase() === 'LOST' &&
+      inStatusTab(item.status, statusFilter) &&
+      matchesSearch(item)
+    )
     .sort((a, b) => b.id - a.id);
+
+  const statusCounts = STATUS_FILTERS.reduce((acc, s) => {
+    acc[s] = items.filter(
+      (item) => item.type?.toUpperCase() === 'LOST' && inStatusTab(item.status, s) && matchesSearch(item)
+    ).length;
+    return acc;
+  }, {});
 
   const ITEMS_PER_PAGE = 10;
   const totalPages = Math.ceil(filteredLost.length / ITEMS_PER_PAGE);
@@ -672,6 +711,37 @@ const LostItems = ({ currentFilter, role }) => {
                 📋 Add Lost Item
               </button>
             </div>
+          </div>
+        </div>
+
+        {/* Status Filter Switch — sliding pill toggle, aligned to the right
+            (same as the admin Lost Items page). */}
+        <div className="flex items-center justify-end border-b border-[#D8E2EF] bg-white px-6 sm:px-8 py-3 shrink-0">
+          <div className="relative inline-flex rounded-full bg-slate-100 p-1">
+            {/* Sliding indicator that moves behind the active label */}
+            <div
+              className="absolute inset-y-1 rounded-full bg-[#0B6B8A] shadow-md transition-all duration-300 ease-out"
+              style={{
+                width: `calc(${100 / STATUS_FILTERS.length}% - 4px)`,
+                left: `calc(${(100 / STATUS_FILTERS.length) * STATUS_FILTERS.indexOf(statusFilter)}% + 2px)`,
+              }}
+            />
+
+            {STATUS_FILTERS.map((s) => (
+              <button
+                key={s}
+                type="button"
+                onClick={() => setStatusFilter(s)}
+                className={`relative z-10 whitespace-nowrap rounded-full px-5 py-1.5 text-xs font-black uppercase tracking-wide transition-colors duration-300 ${
+                  statusFilter === s ? "text-white" : "text-slate-500 hover:text-slate-700"
+                }`}
+              >
+                {s}
+                <span className={`ml-1.5 ${statusFilter === s ? "text-white/80" : "text-slate-400"}`}>
+                  ({statusCounts[s] ?? 0})
+                </span>
+              </button>
+            ))}
           </div>
         </div>
 
@@ -757,7 +827,9 @@ const LostItems = ({ currentFilter, role }) => {
                         EMPTY
                       </span>
                       <p className="text-xs font-bold uppercase tracking-[0.2em] text-[#7B8AA6]">
-                        No items found for "{search}"
+                        {search
+                          ? `No ${statusFilter.toLowerCase()} items found for "${search}"`
+                          : `No ${statusFilter.toLowerCase()} items found`}
                       </p>
                     </div>
                   </td>
@@ -768,50 +840,12 @@ const LostItems = ({ currentFilter, role }) => {
         </div>
 
         {/* Pagination */}
-        {filteredLost.length > 0 && (
-          <div className="flex flex-col gap-4 border-t border-[#D8E2EF] bg-white px-6 py-4 sm:flex-row sm:items-center sm:justify-between">
-            <p className="text-xs font-bold text-[#7B8AA6]">
-              Showing {startIndex + 1}-
-              {Math.min(startIndex + ITEMS_PER_PAGE, filteredLost.length)} of{" "}
-              {filteredLost.length}
-            </p>
-
-            <div className="flex items-center justify-center gap-2">
-              <button
-                type="button"
-                onClick={() => goToPage(Math.max(currentPage - 1, 1))}
-                disabled={currentPage === 1}
-                className="h-8 rounded-lg border border-[#D8E2EF] px-3 text-[11px] font-black uppercase tracking-wide text-[#0B6B8A] transition hover:bg-[#EAF4FF] disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                Prev
-              </button>
-
-              {visiblePages.map((page) => (
-                <button
-                  key={page}
-                  type="button"
-                  onClick={() => goToPage(page)}
-                  className={`h-8 min-w-8 rounded-lg px-2.5 text-xs font-black transition ${
-                    currentPage === page
-                      ? "bg-[#0B6B8A] text-white shadow-md"
-                      : "border border-[#D8E2EF] bg-white text-[#0B6B8A] hover:bg-[#EAF4FF]"
-                  }`}
-                >
-                  {page}
-                </button>
-              ))}
-
-              <button
-                type="button"
-                onClick={() => goToPage(Math.min(currentPage + 1, totalPages))}
-                disabled={currentPage === totalPages}
-                className="h-8 rounded-lg border border-[#D8E2EF] px-3 text-[11px] font-black uppercase tracking-wide text-[#0B6B8A] transition hover:bg-[#EAF4FF] disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                Next
-              </button>
-            </div>
-          </div>
-        )}
+        <Pagination
+          currentPage={currentPage}
+          totalItems={filteredLost.length}
+          pageSize={ITEMS_PER_PAGE}
+          onPageChange={goToPage}
+        />
 
       {/* Add Item Modal */}
       {addOpen && (
@@ -929,7 +963,10 @@ const LostItems = ({ currentFilter, role }) => {
                   <div>
                     <p className="mb-2 block text-xs font-bold uppercase text-slate-700">Date Reported</p>
                     <div className="min-h-11 rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-700">
-                      {selectedItem.created_date || '-'} {selectedItem.created_time ? `at ${selectedItem.created_time}` : ''}
+                      <div><span className="font-semibold">Start:</span> {selectedItem.created_date || '-'}{selectedItem.created_time ? ` · ${String(selectedItem.created_time).slice(0, 5)}` : ''}</div>
+                      {(selectedItem.end_date || selectedItem.end_time) && (
+                        <div><span className="font-semibold">End:</span> {selectedItem.end_date || selectedItem.created_date}{selectedItem.end_time ? ` · ${String(selectedItem.end_time).slice(0, 5)}` : ''}</div>
+                      )}
                     </div>
                   </div>
 
