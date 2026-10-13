@@ -15,7 +15,7 @@
     },
     "android": {
       "package": "com.seekandbalik.mobile",
-      "versionCode": 2,
+      "versionCode": 3,
       "adaptiveIcon": {
         "foregroundImage": "./assets/image/adaptive-icon.png",
         "backgroundColor": "#ffffff"
