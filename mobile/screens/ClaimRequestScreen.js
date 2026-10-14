@@ -160,6 +160,23 @@ function parseOptions(value) {
   }
 }
 
+// Shortest typed answer that counts as answered. Typed answers need at
+// least two characters so a stray key press isn't accepted.
+const MIN_TYPED_ANSWER_LENGTH = 2;
+
+// A question counts as answered when:
+//   - it has dropdown options and one of them is picked (any length, so
+//     one-letter choices like "S", "M" or "L" are accepted), or
+//   - it is a typed answer with at least MIN_TYPED_ANSWER_LENGTH characters.
+function isAnswerComplete(answer, options) {
+  const value = typeof answer === "string" ? answer.trim() : "";
+  if (!value) return false;
+  if (Array.isArray(options) && options.length) {
+    return options.some((option) => option.trim() === value);
+  }
+  return value.length >= MIN_TYPED_ANSWER_LENGTH;
+}
+
 function itemValue(item, ...keys) {
   return (
     keys
@@ -400,7 +417,7 @@ function QuestionCard({
   onFocusInput,
 }) {
   const colors = useIconColors();
-  const answered = answer.trim().length >= 2;
+  const answered = isAnswerComplete(answer, options);
 
   return (
     <View className={`mt-4 ${CARD}`}>
@@ -1354,7 +1371,11 @@ export default function ClaimRequestScreen({
   }
 
   // Derived Properties
-  const completed = answers.filter((ans) => ans.trim().length >= 2).length;
+  // Each answer is checked against its own question, so a picked one-letter
+  // option (S, M, L, ...) counts the same as a longer typed answer.
+  const completed = questionPairs.filter(({ options }, index) =>
+    isAnswerComplete(answers[index], options)
+  ).length;
   const answersComplete = questionPairs.length > 0 && completed === questionPairs.length;
   const scheduleComplete = Boolean(meetingDate && meetingTime);
   const canSubmit = answersComplete && scheduleComplete;

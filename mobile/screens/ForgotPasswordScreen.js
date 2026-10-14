@@ -148,25 +148,66 @@ export default function ForgotPasswordScreen({ navigation }) {
   const { confirmationModal, showFeedback } = useConfirmationModal();
 
   const scrollRef = useRef(null);
+  // The area under the header that the form scrolls in. Its top edge is the
+  // highest point a field can reach before the header covers it.
+  const scrollAreaRef = useRef(null);
   const cardRef = useRef(null);
+  // The first field of the current step (ID number, the code boxes, or New
+  // Password). It must never be scrolled up behind the header.
+  const firstFieldRef = useRef(null);
   // Current scroll position and the top edge of the open keyboard.
   const scrollYRef = useRef(0);
   const keyboardTopRef = useRef(0);
 
-  // Scrolls just enough that the bottom of the card (the "Back to Login"
-  // button) sits above the keyboard. Does nothing if it is already visible.
+  // Space kept between the header and the first field.
+  const FIELD_TOP_GAP = 12;
+  // Space kept between the bottom of the card and the keyboard.
+  const CARD_BOTTOM_GAP = 24;
+
+  // Scrolls so the bottom of the card (the "Back to Login" button) sits above
+  // the keyboard, but never so far that the first field goes behind the
+  // header. When the card is too tall for both (the New Password step on a
+  // small phone), the first field wins: it stays visible and the buttons
+  // below are still reachable by scrolling, thanks to the extra bottom space.
   const keepCardAboveKeyboard = useCallback(() => {
     const keyboardTop = keyboardTopRef.current;
-    if (!keyboardTop || !cardRef.current || !scrollRef.current) return;
+    if (
+      !keyboardTop ||
+      !cardRef.current ||
+      !scrollRef.current ||
+      !scrollAreaRef.current
+    ) {
+      return;
+    }
 
-    cardRef.current.measureInWindow((x, y, width, height) => {
-      const overlap = y + height + 24 - keyboardTop;
-      if (overlap > 0) {
-        scrollRef.current?.scrollTo({
-          y: scrollYRef.current + overlap,
-          animated: true,
+    scrollAreaRef.current.measureInWindow((areaX, areaTop) => {
+      cardRef.current?.measureInWindow((cardX, cardTop, cardWidth, cardHeight) => {
+        // How far to scroll up so the card's bottom clears the keyboard.
+        const toClearKeyboard = cardTop + cardHeight + CARD_BOTTOM_GAP - keyboardTop;
+
+        const scrollBy = (limit) => {
+          const amount = Math.min(toClearKeyboard, limit);
+          if (Math.abs(amount) < 1) return;
+          scrollRef.current?.scrollTo({
+            y: Math.max(0, scrollYRef.current + amount),
+            animated: true,
+          });
+        };
+
+        const field = firstFieldRef.current;
+        if (!field) {
+          scrollBy(toClearKeyboard);
+          return;
+        }
+
+        field.measureInWindow((fieldX, fieldTop) => {
+          // The most the form may scroll up before the first field reaches
+          // the header. A negative value means the field is already hidden,
+          // so the form scrolls back down to show it.
+          const untilHeader = fieldTop - (areaTop + FIELD_TOP_GAP);
+          scrollBy(untilHeader);
         });
-      }
+      });
     });
   }, []);
 
@@ -432,282 +473,284 @@ export default function ForgotPasswordScreen({ navigation }) {
       <View className="flex-1">
         <Header />
 
-        <ScrollView
-          ref={scrollRef}
-          onScroll={(event) => {
-            scrollYRef.current = event.nativeEvent.contentOffset.y;
-          }}
-          scrollEventThrottle={16}
-          className="flex-1 bg-[#f4f5f7] dark:bg-slate-950"
-          contentContainerStyle={{
-            alignItems: 'center',
-            paddingBottom: 24 + keyboardHeight,
-          }}
-          keyboardShouldPersistTaps="handled"
-          keyboardDismissMode="on-drag"
-        >
-          {/* Smaller title spacing while the keyboard is open leaves more room for the form. */}
-          <Text
-            className={`text-[#1e2a5e] text-[26px] font-extrabold font-serif text-center leading-8 dark:text-slate-100 ${
-              keyboardHeight > 0 ? 'mt-4 mb-4' : 'mt-10 mb-10'
-            }`}
+        <View ref={scrollAreaRef} collapsable={false} className="flex-1">
+          <ScrollView
+            ref={scrollRef}
+            onScroll={(event) => {
+              scrollYRef.current = event.nativeEvent.contentOffset.y;
+            }}
+            scrollEventThrottle={16}
+            className="flex-1 bg-[#f4f5f7] dark:bg-slate-950"
+            contentContainerStyle={{
+              alignItems: 'center',
+              paddingBottom: 24 + keyboardHeight,
+            }}
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode="on-drag"
           >
-            {step === 'id' ? 'FORGOT\nPASSWORD' : 'RESET\nPASSWORD'}
-          </Text>
+            {/* Smaller title spacing while the keyboard is open leaves more room for the form. */}
+            <Text
+              className={`text-[#1e2a5e] text-[26px] font-extrabold font-serif text-center leading-8 dark:text-slate-100 ${
+                keyboardHeight > 0 ? 'mt-4 mb-4' : 'mt-10 mb-10'
+              }`}
+            >
+              {step === 'id' ? 'FORGOT\nPASSWORD' : 'RESET\nPASSWORD'}
+            </Text>
 
-          <View
-            ref={cardRef}
-            collapsable={false}
-            className="w-[88%] rounded-2xl py-2 overflow-hidden bg-white shadow-md dark:bg-slate-900 dark:shadow-none"
-          >
-            <View className="bg-white/75 py-6 px-5 dark:bg-slate-900">
-              <View className="w-full gap-4">
-                <Text className="text-[#555] text-xs leading-5 dark:text-slate-400">
-                  {STEP_TEXT[step]}
-                </Text>
-
-                {!!info && step === 'code' && (
-                  <Text className="rounded-lg bg-emerald-50 px-3 py-2 text-xs leading-5 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300">
-                    {info}
+            <View
+              ref={cardRef}
+              collapsable={false}
+              className="w-[88%] rounded-2xl py-2 overflow-hidden bg-white shadow-md dark:bg-slate-900 dark:shadow-none"
+            >
+              <View className="bg-white/75 py-6 px-5 dark:bg-slate-900">
+                <View className="w-full gap-4">
+                  <Text className="text-[#555] text-xs leading-5 dark:text-slate-400">
+                    {STEP_TEXT[step]}
                   </Text>
-                )}
 
-                {/* STEP 1: ID number (numbers-only keyboard) */}
-                {step === 'id' && (
-                  <View>
-                    <Text className={FIELD_LABEL}>ID Number</Text>
-                    <TextInput
-                      className={FIELD_INPUT}
-                      placeholder="Enter your ID number"
-                      placeholderTextColor={placeholderColor}
-                      value={idNumber}
-                      onChangeText={(text) => setIdNumber(text.replace(/\D/g, ''))}
-                      keyboardType="number-pad"
-                      inputMode="numeric"
-                      maxLength={ID_NUMBER_MAX_LENGTH}
-                      autoFocus
-                      returnKeyType="done"
-                      onSubmitEditing={handleRequest}
-                      editable={!loading}
-                    />
-                  </View>
-                )}
+                  {!!info && step === 'code' && (
+                    <Text className="rounded-lg bg-emerald-50 px-3 py-2 text-xs leading-5 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300">
+                      {info}
+                    </Text>
+                  )}
 
-                {/* STEP 2: 6-digit code only */}
-                {step === 'code' && (
-                  <View>
-                    <Text className={FIELD_LABEL}>6-digit Code</Text>
-
-                    {/* Same design as the sign-up screen: six boxes, one digit
-                        each. A single invisible input sits on top of the row
-                        and holds the real value, so typing moves to the next
-                        box, backspace moves back, and pasting or autofill of
-                        the whole code still works. */}
-                    <View>
-                      <View className="flex-row justify-between" pointerEvents="none">
-                        {Array.from({ length: CODE_LENGTH }, (_, index) => {
-                          const digit = code[index] || '';
-                          const isActive =
-                            codeFocused &&
-                            !loading &&
-                            index === Math.min(code.length, CODE_LENGTH - 1);
-
-                          let boxBorder = 'border-[#d7dbe0] dark:border-slate-700';
-                          if (error) boxBorder = 'border-[#c0392b] dark:border-rose-500';
-                          else if (isActive) boxBorder = 'border-[#1b2061] dark:border-indigo-400';
-                          else if (digit) boxBorder = 'border-slate-400 dark:border-slate-500';
-
-                          return (
-                            <View
-                              key={index}
-                              className={`h-[52px] w-[14.5%] items-center justify-center rounded-xl border-2 bg-white dark:bg-slate-800 ${boxBorder}`}
-                            >
-                              <Text className="text-xl font-bold text-[#16233F] dark:text-slate-100">
-                                {digit}
-                              </Text>
-                            </View>
-                          );
-                        })}
-                      </View>
-
+                  {/* STEP 1: ID number (numbers-only keyboard) */}
+                  {step === 'id' && (
+                    <View ref={firstFieldRef} collapsable={false}>
+                      <Text className={FIELD_LABEL}>ID Number</Text>
                       <TextInput
-                        style={{
-                          position: 'absolute',
-                          top: 0,
-                          left: 0,
-                          right: 0,
-                          bottom: 0,
-                          opacity: 0.01,
-                          color: 'transparent',
-                        }}
-                        caretHidden
-                        value={code}
-                        onChangeText={(text) => {
-                          setCode(text.replace(/\D/g, '').slice(0, CODE_LENGTH));
-                          if (error) setError('');
-                        }}
-                        onFocus={() => setCodeFocused(true)}
-                        onBlur={() => setCodeFocused(false)}
+                        className={FIELD_INPUT}
+                        placeholder="Enter your ID number"
+                        placeholderTextColor={placeholderColor}
+                        value={idNumber}
+                        onChangeText={(text) => setIdNumber(text.replace(/\D/g, ''))}
                         keyboardType="number-pad"
                         inputMode="numeric"
-                        textContentType="oneTimeCode"
-                        autoComplete="one-time-code"
-                        maxLength={CODE_LENGTH}
+                        maxLength={ID_NUMBER_MAX_LENGTH}
                         autoFocus
                         returnKeyType="done"
-                        onSubmitEditing={handleVerify}
+                        onSubmitEditing={handleRequest}
                         editable={!loading}
-                        accessibilityLabel={`${CODE_LENGTH}-digit code`}
                       />
                     </View>
-                  </View>
-                )}
+                  )}
 
-                {/* STEP 3: new password + confirm, shown after the code matches */}
-                {step === 'password' && (
-                  <>
-                    <View>
-                      <Text className={FIELD_LABEL}>New Password</Text>
+                  {/* STEP 2: 6-digit code only */}
+                  {step === 'code' && (
+                    <View ref={firstFieldRef} collapsable={false}>
+                      <Text className={FIELD_LABEL}>6-digit Code</Text>
 
-                      <View className="relative">
+                      {/* Same design as the sign-up screen: six boxes, one digit
+                          each. A single invisible input sits on top of the row
+                          and holds the real value, so typing moves to the next
+                          box, backspace moves back, and pasting or autofill of
+                          the whole code still works. */}
+                      <View>
+                        <View className="flex-row justify-between" pointerEvents="none">
+                          {Array.from({ length: CODE_LENGTH }, (_, index) => {
+                            const digit = code[index] || '';
+                            const isActive =
+                              codeFocused &&
+                              !loading &&
+                              index === Math.min(code.length, CODE_LENGTH - 1);
+
+                            let boxBorder = 'border-[#d7dbe0] dark:border-slate-700';
+                            if (error) boxBorder = 'border-[#c0392b] dark:border-rose-500';
+                            else if (isActive) boxBorder = 'border-[#1b2061] dark:border-indigo-400';
+                            else if (digit) boxBorder = 'border-slate-400 dark:border-slate-500';
+
+                            return (
+                              <View
+                                key={index}
+                                className={`h-[52px] w-[14.5%] items-center justify-center rounded-xl border-2 bg-white dark:bg-slate-800 ${boxBorder}`}
+                              >
+                                <Text className="text-xl font-bold text-[#16233F] dark:text-slate-100">
+                                  {digit}
+                                </Text>
+                              </View>
+                            );
+                          })}
+                        </View>
+
                         <TextInput
-                          className={`${FIELD_INPUT} pr-12`}
-                          placeholder={`${MIN_PASSWORD_LENGTH}–${MAX_PASSWORD_LENGTH} characters, no spaces`}
-                          placeholderTextColor={placeholderColor}
-                          value={newPassword}
-                          onChangeText={setNewPassword}
-                          secureTextEntry={!showNewPassword}
-                          autoCapitalize="none"
-                          autoCorrect={false}
+                          style={{
+                            position: 'absolute',
+                            top: 0,
+                            left: 0,
+                            right: 0,
+                            bottom: 0,
+                            opacity: 0.01,
+                            color: 'transparent',
+                          }}
+                          caretHidden
+                          value={code}
+                          onChangeText={(text) => {
+                            setCode(text.replace(/\D/g, '').slice(0, CODE_LENGTH));
+                            if (error) setError('');
+                          }}
+                          onFocus={() => setCodeFocused(true)}
+                          onBlur={() => setCodeFocused(false)}
+                          keyboardType="number-pad"
+                          inputMode="numeric"
+                          textContentType="oneTimeCode"
+                          autoComplete="one-time-code"
+                          maxLength={CODE_LENGTH}
                           autoFocus
-                          maxLength={MAX_PASSWORD_LENGTH}
-                          editable={!loading}
-                        />
-
-                        <TouchableOpacity
-                          className="absolute right-0 top-0 h-[46px] w-12 items-center justify-center"
-                          onPress={() => setShowNewPassword(!showNewPassword)}
-                        >
-                          <Ionicons
-                            name={showNewPassword ? 'eye-off-outline' : 'eye-outline'}
-                            size={22}
-                            color={eyeColor}
-                          />
-                        </TouchableOpacity>
-                      </View>
-
-                      <Text className="mt-1.5 text-[11px] leading-4 text-[#555] dark:text-slate-400">
-                        Must include at least one capital letter and one special character (e.g. ! @ # $ %).
-                      </Text>
-                    </View>
-
-                    <View>
-                      <Text className={FIELD_LABEL}>Confirm New Password</Text>
-
-                      <View className="relative">
-                        <TextInput
-                          className={`${FIELD_INPUT} pr-12`}
-                          placeholder="Re-enter new password"
-                          placeholderTextColor={placeholderColor}
-                          value={confirmPassword}
-                          onChangeText={setConfirmPassword}
-                          secureTextEntry={!showConfirmPassword}
-                          autoCapitalize="none"
-                          autoCorrect={false}
-                          maxLength={MAX_PASSWORD_LENGTH}
                           returnKeyType="done"
-                          onSubmitEditing={handleReset}
+                          onSubmitEditing={handleVerify}
                           editable={!loading}
+                          accessibilityLabel={`${CODE_LENGTH}-digit code`}
                         />
-
-                        <TouchableOpacity
-                          className="absolute right-0 top-0 h-[46px] w-12 items-center justify-center"
-                          onPress={() => setShowConfirmPassword(!showConfirmPassword)}
-                        >
-                          <Ionicons
-                            name={
-                              showConfirmPassword ? 'eye-off-outline' : 'eye-outline'
-                            }
-                            size={22}
-                            color={eyeColor}
-                          />
-                        </TouchableOpacity>
                       </View>
                     </View>
-                  </>
-                )}
+                  )}
 
-                {!!error && (
-                  <Text className="text-[#c0392b] text-xs dark:text-rose-400">{error}</Text>
-                )}
+                  {/* STEP 3: new password + confirm, shown after the code matches */}
+                  {step === 'password' && (
+                    <>
+                      <View ref={firstFieldRef} collapsable={false}>
+                        <Text className={FIELD_LABEL}>New Password</Text>
 
-                <TouchableOpacity
-                  className={PRIMARY_BUTTON}
-                  activeOpacity={0.85}
-                  onPress={handlePrimaryPress}
-                  disabled={loading}
-                >
-                  <Text className="text-white font-bold text-[15px]">
-                    {BUTTON_TEXT[step]}
-                  </Text>
-                </TouchableOpacity>
+                        <View className="relative">
+                          <TextInput
+                            className={`${FIELD_INPUT} pr-12`}
+                            placeholder={`${MIN_PASSWORD_LENGTH}–${MAX_PASSWORD_LENGTH} characters, no spaces`}
+                            placeholderTextColor={placeholderColor}
+                            value={newPassword}
+                            onChangeText={setNewPassword}
+                            secureTextEntry={!showNewPassword}
+                            autoCapitalize="none"
+                            autoCorrect={false}
+                            autoFocus
+                            maxLength={MAX_PASSWORD_LENGTH}
+                            editable={!loading}
+                          />
 
-                {step === 'code' && (
-                  <View className="flex-row items-center justify-between">
-                    <TouchableOpacity
-                      onPress={handleResend}
-                      disabled={loading || cooldown > 0}
-                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                    >
-                      <Text
-                        className={`text-xs font-semibold ${
-                          cooldown > 0
-                            ? 'text-slate-400 dark:text-slate-500'
-                            : 'text-[#1e2a5e] dark:text-indigo-200'
-                        }`}
+                          <TouchableOpacity
+                            className="absolute right-0 top-0 h-[46px] w-12 items-center justify-center"
+                            onPress={() => setShowNewPassword(!showNewPassword)}
+                          >
+                            <Ionicons
+                              name={showNewPassword ? 'eye-off-outline' : 'eye-outline'}
+                              size={22}
+                              color={eyeColor}
+                            />
+                          </TouchableOpacity>
+                        </View>
+
+                        <Text className="mt-1.5 text-[11px] leading-4 text-[#555] dark:text-slate-400">
+                          Must include at least one capital letter and one special character (e.g. ! @ # $ %).
+                        </Text>
+                      </View>
+
+                      <View>
+                        <Text className={FIELD_LABEL}>Confirm New Password</Text>
+
+                        <View className="relative">
+                          <TextInput
+                            className={`${FIELD_INPUT} pr-12`}
+                            placeholder="Re-enter new password"
+                            placeholderTextColor={placeholderColor}
+                            value={confirmPassword}
+                            onChangeText={setConfirmPassword}
+                            secureTextEntry={!showConfirmPassword}
+                            autoCapitalize="none"
+                            autoCorrect={false}
+                            maxLength={MAX_PASSWORD_LENGTH}
+                            returnKeyType="done"
+                            onSubmitEditing={handleReset}
+                            editable={!loading}
+                          />
+
+                          <TouchableOpacity
+                            className="absolute right-0 top-0 h-[46px] w-12 items-center justify-center"
+                            onPress={() => setShowConfirmPassword(!showConfirmPassword)}
+                          >
+                            <Ionicons
+                              name={
+                                showConfirmPassword ? 'eye-off-outline' : 'eye-outline'
+                              }
+                              size={22}
+                              color={eyeColor}
+                            />
+                          </TouchableOpacity>
+                        </View>
+                      </View>
+                    </>
+                  )}
+
+                  {!!error && (
+                    <Text className="text-[#c0392b] text-xs dark:text-rose-400">{error}</Text>
+                  )}
+
+                  <TouchableOpacity
+                    className={PRIMARY_BUTTON}
+                    activeOpacity={0.85}
+                    onPress={handlePrimaryPress}
+                    disabled={loading}
+                  >
+                    <Text className="text-white font-bold text-[15px]">
+                      {BUTTON_TEXT[step]}
+                    </Text>
+                  </TouchableOpacity>
+
+                  {step === 'code' && (
+                    <View className="flex-row items-center justify-between">
+                      <TouchableOpacity
+                        onPress={handleResend}
+                        disabled={loading || cooldown > 0}
+                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                       >
-                        {cooldown > 0 ? `Resend code in ${cooldown}s` : 'Resend code'}
-                      </Text>
-                    </TouchableOpacity>
+                        <Text
+                          className={`text-xs font-semibold ${
+                            cooldown > 0
+                              ? 'text-slate-400 dark:text-slate-500'
+                              : 'text-[#1e2a5e] dark:text-indigo-200'
+                          }`}
+                        >
+                          {cooldown > 0 ? `Resend code in ${cooldown}s` : 'Resend code'}
+                        </Text>
+                      </TouchableOpacity>
 
+                      <TouchableOpacity
+                        onPress={startOver}
+                        disabled={loading}
+                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                      >
+                        <Text className="text-xs font-semibold text-slate-500 dark:text-slate-400">
+                          Use a different ID number
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+                  )}
+
+                  {step === 'password' && (
                     <TouchableOpacity
                       onPress={startOver}
                       disabled={loading}
                       hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                     >
-                      <Text className="text-xs font-semibold text-slate-500 dark:text-slate-400">
-                        Use a different ID number
+                      <Text className="text-center text-xs font-semibold text-slate-500 dark:text-slate-400">
+                        Code expired? Start over
                       </Text>
                     </TouchableOpacity>
-                  </View>
-                )}
+                  )}
 
-                {step === 'password' && (
                   <TouchableOpacity
-                    onPress={startOver}
+                    className={SECONDARY_BUTTON}
+                    activeOpacity={0.85}
+                    onPress={goToLogin}
                     disabled={loading}
-                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                   >
-                    <Text className="text-center text-xs font-semibold text-slate-500 dark:text-slate-400">
-                      Code expired? Start over
+                    <Text className="text-[#1e2a5e] font-bold text-[15px] dark:text-slate-200">
+                      Back to Login
                     </Text>
                   </TouchableOpacity>
-                )}
-
-                <TouchableOpacity
-                  className={SECONDARY_BUTTON}
-                  activeOpacity={0.85}
-                  onPress={goToLogin}
-                  disabled={loading}
-                >
-                  <Text className="text-[#1e2a5e] font-bold text-[15px] dark:text-slate-200">
-                    Back to Login
-                  </Text>
-                </TouchableOpacity>
+                </View>
               </View>
             </View>
-          </View>
-        </ScrollView>
+          </ScrollView>
+        </View>
       </View>
 
       <Footer />
