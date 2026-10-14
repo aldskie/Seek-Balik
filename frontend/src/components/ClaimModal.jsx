@@ -144,6 +144,24 @@ const weekdayOf = (dateStr) => {
   return isNaN(d.getTime()) ? null : d.getDay(); // 0 = Sunday, 6 = Saturday
 };
 
+// Shortest typed answer that counts as answered. Typed answers need at
+// least two characters so a stray key press isn't accepted.
+const MIN_TYPED_ANSWER_LENGTH = 2;
+
+// A question counts as answered when:
+//   - it has dropdown options and one of them is picked (any length, so
+//     one-letter choices like "S", "M" or "L" are accepted), or
+//   - it is a typed answer with at least MIN_TYPED_ANSWER_LENGTH characters.
+// Same rule as the mobile app's Claim Request screen.
+const isAnswerComplete = (answer, options) => {
+  const value = typeof answer === "string" ? answer.trim() : "";
+  if (!value) return false;
+  if (Array.isArray(options) && options.length) {
+    return options.some((option) => option.trim() === value);
+  }
+  return value.length >= MIN_TYPED_ANSWER_LENGTH;
+};
+
 const slotsAllowedOn = (dateStr, slots) => {
   const day = weekdayOf(dateStr);
   if (day === 0) return [];
@@ -796,8 +814,9 @@ const ClaimModal = ({
   // ==========================================================
   // ALL QUESTIONS ANSWERED
   //
-  // True once every ownership question has a real answer (dropdown
-  // selection or free text of at least 2 characters). This just makes
+  // True once every ownership question has a real answer (any dropdown
+  // selection, including one-letter choices like "S", or free text of at
+  // least 2 characters — see isAnswerComplete). This just makes
   // sure nothing is left blank — it says nothing about correctness.
   // Correctness is resolved separately by verificationStatus, via the
   // live check below.
@@ -808,7 +827,7 @@ const ClaimModal = ({
 
   const allQuestionsAnswered =
     activeQuestions.every(
-      (_, index) => (answers[index] || "").trim().length >= 2
+      (_, index) => isAnswerComplete(answers[index], activeOptions[index])
     );
 
 
@@ -1194,8 +1213,9 @@ const ClaimModal = ({
     // ------------------------------------------------------
     // ANSWERS
     //
-    // Only checks that every question has been answered with at
-    // least 2 characters. Correctness is a separate concern, already
+    // Only checks that every question has been answered: any dropdown
+    // choice counts (even one letter, like "S"), and typed answers need
+    // at least 2 characters. Correctness is a separate concern, already
     // tracked in verificationStatus — and it no longer gates
     // submission at all (see note above).
     // ------------------------------------------------------
@@ -1219,9 +1239,7 @@ const ClaimModal = ({
 
 
       if (
-        answers[index]
-          .trim()
-          .length < 2
+        !isAnswerComplete(answers[index], activeOptions[index])
       ) {
 
         setValidationError(
